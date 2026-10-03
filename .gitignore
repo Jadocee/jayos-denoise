@@ -1,0 +1,8 @@
+# What makepkg leaves beside packaging/arch/PKGBUILD: the fork's bare mirror
+# (one per git source, named by its folder:: prefix), the extracted sources,
+# the staged package, the package files and the logs.
+packaging/arch/DeepFilterNetPlus/
+packaging/arch/src/
+packaging/arch/pkg/
+packaging/arch/*.pkg.tar*
+packaging/arch/*.log
