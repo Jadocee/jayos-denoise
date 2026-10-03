@@ -35,8 +35,42 @@ header() { # header <what> <made from>
 
 die() { echo "contract.sh: $*" >&2; exit 1; }
 
+# This PATH with easyeffects subtracted: each directory that holds one is
+# replaced by a directory of links to everything in it but that.
+#
+# NOT by dropping the directory. That was the first version, and on the
+# machine this is for it is /usr/bin -- which also holds bash and jq, and
+# /bin is the same directory -- so the PATH came out empty, `env` could not
+# find the bash in the engine's #! line, and `status` failed: tools/check.sh
+# reported the contract broken on every Arch machine with EasyEffects
+# installed, and passed where it was not. RUN, by overlaying a fake
+# easyeffects onto /usr/bin in a private mount namespace (exit 1, "env:
+# 'bash': No such file or directory");
+# tests/shell/test-contract.sh holds the case. Subtracting from the whole
+# directory, rather than listing what the engine needs, is jayos's
+# tools/lib/absent.sh technique and its reason: a list of tools to keep
+# would be right until the engine called something new.
+path_without_easyeffects() {
+    local out="" d farm n=0
+    local -a dirs
+    IFS=: read -ra dirs <<<"$PATH"
+    for d in "${dirs[@]}"; do
+        [[ -n "$d" && -d "$d" ]] || continue
+        if [[ -x "$d/easyeffects" ]]; then
+            n=$((n + 1))
+            farm="$WORK/path-without-easyeffects/$n"
+            # One ln for the whole directory, which is not empty: it holds
+            # easyeffects.
+            mkdir -p "$farm" && ln -s "$d"/* "$farm/" && rm -f "$farm/easyeffects" || return 1
+            d=$farm
+        fi
+        out+="${out:+:}$d"
+    done
+    printf '%s' "$out"
+}
+
 generate() { # generate <dir>
-    local dir=$1 s names keys dirs
+    local dir=$1 s names keys dirs noee
 
     # The schema of everything below. A reader refuses a newer one.
     printf '1\n' > "$dir/VERSION"
@@ -52,15 +86,18 @@ generate() { # generate <dir>
     } > "$dir/strengths.txt"
 
     for s in $names; do
-        "$ENGINE" preset "$s" | jq -S . > "$dir/preset.$s.json" || die "preset $s failed"
-        "$ENGINE" preset "$s" off | jq -S . > "$dir/preset.$s.off.json" || die "preset $s off failed"
+        # Byte for byte what `set` writes, not re-serialised: jq before 1.7
+        # prints 24.0 as 24, so a contract passed through it would differ by
+        # the jq that made it rather than by the code.
+        "$ENGINE" preset "$s" > "$dir/preset.$s.json" || die "preset $s failed"
+        "$ENGINE" preset "$s" off > "$dir/preset.$s.off.json" || die "preset $s off failed"
     done
 
     # The keys of `status`, in its order. Run with no EasyEffects on PATH,
     # where every key is still printed: a reader may rely on every key here,
     # and on no key that is not.
-    keys=$(env -i PATH="$(dirname "$(command -v jq)"):/usr/bin:/bin" HOME="$WORK" \
-               bash -c 'PATH=$(printf "%s" "$PATH" | tr ":" "\n" | while read -r d; do [[ -x "$d/easyeffects" ]] || printf "%s:" "$d"; done); "$1" status' _ "$ENGINE" \
+    noee=$(path_without_easyeffects) || die "could not make a PATH without easyeffects under $WORK"
+    keys=$(env -i PATH="$noee" HOME="$WORK" "$ENGINE" status \
            | jq -r 'keys_unsorted[]') || die "jayos-denoise status failed"
     [[ -n "$keys" ]] || die "jayos-denoise status printed no keys"
     { header "The keys of jayos-denoise status, in its order." "jayos-denoise status"

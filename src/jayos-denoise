@@ -61,8 +61,17 @@ set -uo pipefail
 # beside the real file in /usr/lib/jayos-denoise -- and a checkout finds it
 # beside this one in src/.
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+# Refused without it, before any verb runs. With no `set -e` a failed source
+# went on: every ee_ function was "command not found", and status exited 0
+# with installed:false -- EasyEffects called missing, with confidence, on a
+# machine that has it, which jayos's wrapper passes on as this engine's
+# answer. A package missing a file is the package's to report
+# (tests/shell/test-engine.sh, "without its library").
 # shellcheck source=easyeffects-lib.sh
-source "$HERE/easyeffects-lib.sh"
+source "$HERE/easyeffects-lib.sh" || {
+    echo "jayos-denoise: could not load $HERE/easyeffects-lib.sh; pacman -Qkk jayos-denoise lists the package's files that are missing" >&2
+    exit 1
+}
 
 PRESET_NAME="denoise"
 ME="$(basename "$0")"

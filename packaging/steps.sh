@@ -145,6 +145,15 @@ embeds() { # embeds <so> <tarball>
     return 1
 }
 
+# Could embeds() find this tarball, if the .so carried it? Only if it is
+# there and opens with the anchor embeds() searches by -- which an empty file
+# does not, and an empty file is the one embeds() would otherwise match at
+# every anchor, comparing zero bytes. od rather than a byte compare, for the
+# reason embeds() gives: coreutils, which makepkg already needs.
+findable() { # findable <tarball>
+    [[ -f "$1" && $(head -c 3 "$1" | od -An -tx1 | tr -d ' \n') == 1f8b08 ]]
+}
+
 # 0 when every NEEDED entry of the .so belongs to glibc or gcc-libs, the two
 # packages depends= names.
 #
@@ -201,8 +210,21 @@ check_plugin() { # check_plugin <tree>
     # flags, not the build's: a flag added to the build line alone would
     # change the .so and leave the tree as it was. The full model has to be
     # found and the low-latency one must not be; the positive half is what
-    # stops a comparison that can never match -- a moved model, a changed
-    # anchor -- from passing as an absence.
+    # stops a comparison that can never match -- a changed anchor, a changed
+    # way of embedding -- from passing as an absence.
+    #
+    # It cannot do that for a low-latency tarball embeds() could never find.
+    # Gone from models/ -- renamed upstream at a bumped pin, say -- or not a
+    # gzip stream, "the .so does not carry it" is true of every .so there is;
+    # and an empty full-model tarball is "carried" by any .so with an anchor
+    # in it. So both have to be findable before either answer counts. Without
+    # this, all three of those passed: RUN, against stand-ins, in
+    # tests/shell/test-steps.sh, whose cases for them are what hold this.
+    local m
+    for m in DeepFilterNet3_onnx.tar.gz DeepFilterNet3_ll_onnx.tar.gz; do
+        findable "$tree/models/$m" \
+            || die "$tree/models/$m is missing, empty or not a gzip stream, so whether $SO_NAME carries it cannot be told"
+    done
     embeds "$so" "$tree/models/DeepFilterNet3_onnx.tar.gz" \
         || die "$SO_NAME does not carry the full model"
     ! embeds "$so" "$tree/models/DeepFilterNet3_ll_onnx.tar.gz" \

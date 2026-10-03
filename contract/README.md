@@ -14,7 +14,7 @@ suites hold its wrapper, its popup, its doctor and its recipe to the copy.
 | `commands.txt` | The engine's command language, one form per line, as its own usage prints it. jayos's wrapper may run these and no others. | generated |
 | `status-keys.txt` | The keys `jayos-denoise status` prints, in its order. A reader may rely on every key here and on none that is not. | generated |
 | `strengths.txt` | The strength names, in order. jayos writes them into its settings, its popup's cycle and its panel's choices. | generated |
-| `preset.<strength>.json`, `preset.<strength>.off.json` | The preset `set` writes for each strength, on and bypassed, keys sorted. | generated |
+| `preset.<strength>.json`, `preset.<strength>.off.json` | The preset `set` writes for each strength, on and bypassed, byte for byte. | generated |
 | `facts.txt` | Names a desktop writes into its own code: the preset's name, the plugin's file and its key inside the preset, and the directories EasyEffects searches when `LADSPA_PATH` is unset. | generated |
 | `steps.txt` | The verbs of `packaging/steps.sh` and their arguments: everything jayos's recipe calls. | generated |
 

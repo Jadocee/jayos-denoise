@@ -39,12 +39,24 @@ run() {
     esac
 }
 
-# The tracked scripts, or every script in the tree outside a git checkout --
-# where `git ls-files` lists nothing, and a syntax step over nothing would
-# report clean having examined nothing.
+# The scripts git knows of, tracked or not yet added, or every script in the
+# tree outside a git checkout -- where `git ls-files` lists nothing, and a
+# syntax step over nothing would report clean having examined nothing.
+#
+# Untracked as well as tracked, minus what .gitignore names (makepkg's src/,
+# pkg/ and the fork's mirror): tracked alone skipped every file not yet
+# added, so a new script with a syntax error passed this step, and every
+# suite under tests/shell was parsed by nothing until its first commit --
+# RUN, in the checkout this was found in, where `git ls-files` listed six
+# files and none of tests/. A tracked file deleted from the work tree is
+# listed too, and is skipped below rather than reported as a syntax error.
+# tests/shell/test-contract.sh holds both, and the outside-git branch.
 scripts() {
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        git ls-files '*.sh' 'src/jayos-denoise' 'packaging/arch/PKGBUILD'
+    # "true", not merely exit 0: inside a .git directory it exits 0 and
+    # prints "false", and ls-files there lists nothing.
+    if [[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" == true ]]; then
+        git ls-files --cached --others --exclude-standard \
+            '*.sh' 'src/jayos-denoise' 'packaging/arch/PKGBUILD'
     else
         find . -path ./packaging/arch/src -prune -o -type f \
             \( -name '*.sh' -o -path ./src/jayos-denoise -o -path ./packaging/arch/PKGBUILD \) -print
@@ -55,6 +67,7 @@ step "shell syntax"
 syntax() {
     local f bad=0 n=0
     while IFS= read -r f; do
+        [[ -f "$f" ]] || continue
         n=$((n + 1))
         bash -n "$f" || { echo "  syntax error in $f"; bad=1; }
     done < <(scripts)
