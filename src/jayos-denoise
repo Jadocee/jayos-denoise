@@ -49,11 +49,36 @@
 #     off must never replace a preset somebody chose.
 #
 # MOVED HERE from JayOS, where it was config/common/scripts/hypr/denoise.sh
-# at jayos commit bf53d6a. What changed is the settings: the two reads of
-# settings.json became arguments, `status` lost the two keys that came from
-# it (enabled, strength -- JayOS's wrapper adds them back), and every remedy
-# that named a JayOS path names this package instead. The rest is the same
-# code with the same reasons.
+# at jayos commit bf53d6a. Every difference in the code -- comments aside --
+# for whoever carries a fix across by diff:
+#
+#   - The settings. settings.sh is not sourced. The two reads of
+#     settings.json became arguments: `apply` takes on|off and a strength,
+#     with --force before or after the strength, where it took --force
+#     alone, and refuses a missing state with exit 1. `status` lost the two
+#     keys that came from it (enabled, strength -- JayOS's wrapper adds them
+#     back). With no saved strength to fall back on, a strength left out,
+#     or one off and apply do not know, is balanced (DEFAULT_STRENGTH).
+#   - The remedies. With no plugin, `set on` and `apply on` say where
+#     EasyEffects looked and name `pacman -Qkk jayos-denoise`
+#     (plugin_not_found), where they named JayOS's build arm; apply's says
+#     it in four lines where it said two.
+#   - `build` is gone: building is the package's, and the verb the popup's
+#     button runs stays in JayOS's wrapper. `strengths` is new
+#     (strength_names, read from strength_params' own arms). An unknown verb
+#     gets usage(), four lines under the name this was started by ($ME),
+#     where it got one line naming denoise.sh's verbs.
+#   - Every message that began "denoise.sh:" begins "jayos-denoise:".
+#   - The library is sourced from this file's own directory, not the one
+#     above it, and one that will not load is refused with exit 1 where the
+#     original ran on without it.
+#   - apply's "did not load" and "did not reload" are on stdout, with
+#     load_preset's "socat is not installed" folded in; they were on stderr
+#     (the head of the apply arm says why).
+#
+# The rest is the same code with the same reasons. Nothing holds this list
+# to the code: it was made on 2026-10-04 from a diff of the two files with
+# comment lines and trailing comments stripped.
 
 set -uo pipefail
 
@@ -356,9 +381,15 @@ case "${1:-status}" in
             # filter to idle, but the file is not enough: an instance restores
             # its pipeline from its own database, which still says "ours, not
             # bypassed", so `apply off` makes the next one agree -- and
-            # whatever starts EasyEffects is what has to call it. JayOS does
-            # at login and from every place in the shell that starts one
-            # (its easyeffects-lib.sh, ee_apply_noise_setting).
+            # whatever starts EasyEffects is what has to call it. JayOS calls
+            # it at login, and when the popup's Start, Next preset or Open
+            # starts one (easyeffects.sh) or the equaliser does
+            # (music/equalizer.sh), through ee_apply_noise_setting in its
+            # easyeffects-lib.sh. Not yet when something else starts it --
+            # the application launcher, `systemctl --user restart`, the
+            # unit's own Restart=on-failure -- which waits for the next
+            # login (docs/DEEPFILTERNET.md, "A preset you chose wins at
+            # login").
             #
             # A process that is still starting is waited for, and for as long
             # as apply waits: a start can take four seconds through the unit
@@ -374,6 +405,18 @@ case "${1:-status}" in
         ;;
 
     apply)
+        # EVERY REPORT APPLY EXITS 0 AFTER IS ON STDOUT. It exits 0 whatever
+        # happened -- it runs at login, with nobody to read a refusal -- so
+        # the status tells a caller nothing and the lines are the whole
+        # report. Split over two streams, a caller that keeps one of them
+        # (a $(...), a `>log 2>/dev/null`) heard half, and the half on
+        # stderr was the two failures, "did not load" and "did not reload":
+        # the lines most worth reading. stderr is left to what exits 1 here,
+        # a usage error or a preset that cannot be written, which is the
+        # caller's fault or the package's rather than an outcome of the
+        # login. load_preset's own "socat is not installed" is folded in
+        # with 2>&1 for the same reason (tests/shell/test-engine.sh, "apply
+        # on, stdout alone").
         case "${2:-}" in
             on|off) wanted=$2 ;;
             *) die "usage: $ME apply on|off [gentle|balanced|maximum] [--force]" ;;
@@ -410,15 +453,14 @@ case "${1:-status}" in
             write_preset "$strength" true
             if ee_running || [[ "$(ee_rc_get Presets lastLoadedInputPreset)" == "$PRESET_NAME" ]]; then
                 if ee_wait_running 20 && [[ "$(ee_current_preset input)" == "$PRESET_NAME" ]]; then
-                    load_preset || echo "jayos-denoise: easyeffects did not reload the preset" >&2
+                    load_preset 2>&1 || echo "jayos-denoise: easyeffects did not reload the preset"
                 fi
             fi
             exit 0
         fi
 
         if ! ee_plugin_path >/dev/null; then
-            # On stdout, as every other way out of apply is: a login hook
-            # keeps stdout, and the caller decides what to do with it.
+            # On stdout, as every report apply exits 0 after is (above).
             plugin_not_found "noise suppression is wanted on but the DeepFilterNet plugin is not where EasyEffects looks" 2>&1
             exit 0
         fi
@@ -437,10 +479,10 @@ case "${1:-status}" in
             echo "jayos-denoise: input preset '$current' is loaded; leaving it (set on, or --force, replaces it)"
             exit 0
         fi
-        if load_preset; then
+        if load_preset 2>&1; then
             echo "jayos-denoise: loaded $PRESET_NAME ($strength)"
         else
-            echo "jayos-denoise: easyeffects did not load $PRESET_NAME" >&2
+            echo "jayos-denoise: easyeffects did not load $PRESET_NAME"
         fi
         exit 0
         ;;

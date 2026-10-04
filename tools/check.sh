@@ -4,10 +4,13 @@
 #
 #   tools/check.sh
 #
-# Exit 0: everything ran and passed. 1: something failed. 2: nothing failed but
-# something could not run -- no jq, no socat, no python3 -- which is a
-# different answer from "clean" and is reported as one. A check that examined
-# nothing must not be counted as a check that found nothing.
+# Exit 0: everything that ran passed; the cases a suite ran past without
+# exercising -- its counted skips, `  skip ...` lines -- are named in the
+# summary, and the last line says how many. 1: something failed. 2: nothing
+# failed but a whole suite could not run -- no jq, no socat, no python3 --
+# which is a different answer from "clean" and is reported as one. A check
+# that examined nothing must not be counted as a check that found nothing,
+# and a run that skipped a case must not end on the line a full run prints.
 #
 # The same three statuses as jayos's suites, because jayos's installer reads
 # its own suites' answers the same way and holds its side of the contract to
@@ -24,16 +27,42 @@ cd "$ROOT" || exit 2
 
 FAILED=()
 SKIPPED=()
+PARTIAL=()
+
+# Each step's output, kept for the skip count below while it streams.
+LOG=$(mktemp "${TMPDIR:-/tmp}/denoise-check.XXXXXX") || {
+    echo "could not make a scratch file; nothing was examined"
+    exit 2
+}
+trap 'rm -f "$LOG"' EXIT
 
 step() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 # run <name> <command...>: 0 passes, 2 is "could not run", anything else fails.
+#
+# A 0 is not the whole answer. Two suites here run past cases the machine
+# cannot ask -- test-engine.sh's no-LADSPA_PATH remedy where the plugin is
+# installed; test-contract.sh's overlay where unshare is refused, and its
+# check.sh inside git where there is no git -- and say so with a counted
+# `  skip ...` line while exiting 0, because a machine that has the plugin
+# is not a machine with findings. Looking at the status alone, this then
+# ended on "ok, nothing to fix", byte for byte what a run that asked
+# everything prints. So the skips of a suite that passed are collected and
+# named in the summary, and the status is left alone -- jayos's install.sh
+# does the same in its skips_within(), for the same reason. The skips of a
+# suite that failed or could not run are not: FAILED and "not exercised"
+# already say more. `^  skip ` with its trailing space, the shape every
+# suite's skip() prints.
 run() {
-    local name="$1"
+    local name="$1" status line
     shift
-    "$@"
-    case $? in
-        0) ;;
+    "$@" | tee "$LOG"
+    status=${PIPESTATUS[0]}
+    case $status in
+        0)  while IFS= read -r line; do
+                PARTIAL+=("$name: ${line#  skip }")
+            done < <(grep -E '^  skip ' "$LOG")
+            ;;
         2) SKIPPED+=("$name") ;;
         *) FAILED+=("$name") ;;
     esac
@@ -105,9 +134,17 @@ fi
 if (( ${#SKIPPED[@]} )); then
     printf 'not exercised: %s\n' "${SKIPPED[@]}"
 fi
+if (( ${#PARTIAL[@]} )); then
+    echo "ran, but not every case:"
+    printf '  %s\n' "${PARTIAL[@]}"
+fi
 if (( ${#FAILED[@]} )); then
     exit 1
 elif (( ${#SKIPPED[@]} )); then
     exit 2
 fi
-echo "ok, nothing to fix"
+if (( ${#PARTIAL[@]} )); then
+    echo "ok, nothing to fix; ${#PARTIAL[@]} case(s) not exercised, listed above"
+else
+    echo "ok, nothing to fix"
+fi

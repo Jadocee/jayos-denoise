@@ -5,8 +5,8 @@
 #   tests/shell/test-packaging.sh
 #
 # Exit 0: every case passed. 1: a case failed. There is no exit 2: nothing
-# here needs more than bash, sed, grep and coreutils, so there is no machine
-# that can start this suite and not run all of it.
+# here needs more than bash, sed, grep, awk and coreutils, so there is no
+# machine that can start this suite and not run all of it.
 #
 # makepkg is an Arch tool and this suite has to run where it is not. So the
 # recipe is sourced and read the way makepkg reads it, and each of its
@@ -18,10 +18,16 @@
 # build flag, proof and installed path is packaging/steps.sh's, and
 # tests/shell/test-steps.sh holds those against fakes.
 #
+# depends= is held both ways to what the package runs: the plugin's half to
+# the NEEDED check in steps.sh, the engine's to the commands a small shell
+# lexer reads out of src/jayos-denoise and src/easyeffects-lib.sh.
+#
 # What this does NOT prove, and is read rather than run: that makepkg accepts
 # the file (no makepkg or namcap here), that the source=() line clones, and
 # that makepkg's run_function_safe gives a function the same errexit and
-# errtrace that `bash -eE` gives it here.
+# errtrace that `bash -eE` gives it here; nor which package installs each
+# command, which is this suite's table, read and not asked of pacman (there
+# is none here to ask).
 
 set -uo pipefail
 
@@ -180,6 +186,380 @@ for d in glibc gcc-libs; do
     else
         bad "depends=() lacks $d, which steps.sh's NEEDED check assumes it names"
     fi
+done
+
+# THE ENGINE'S HALF OF depends=, held to the commands the engine and its
+# library run. The commands are read out of the code, not listed here; what
+# this suite adds is only which package installs each one, which nothing in
+# the code can say. Nothing held this half before: drop socat from depends=
+# and the package installed where `set on` died "socat is not installed";
+# drop jq and status died, which jayos's wrapper turns into its no-engine
+# answer.
+#
+# The commands come from a small shell lexer (the awk program below), not a
+# grep: a grep for "socat" is satisfied by the comment that explains why
+# socat, and a list of command words by line is fooled by a message such as
+# "...; pacman -Qkk jayos-denoise lists ...", where `pacman` follows a `;`
+# inside quotes. The lexer knows quotes, $( ) and ${ } nested inside them,
+# comments, heredocs, case patterns, [[ ]], (( )), assignments, redirections,
+# and the wrappers that run the word after them (timeout, setsid, env), and
+# reports three things: a command run, a command only probed with
+# `command -v`, and a command word it cannot name because it is an expansion
+# -- which no row below could tie to a package, so any is a failure. What it
+# is NOT: a shell parser. RUN on 2026-10-04 with a stand-in command (curl)
+# in each place: in a comment, in a double-quoted message after its `;`, in
+# a heredoc and in a for-list it is not read as run; after $(, inside
+# "$( )", |, &&, if and then, a case arm, [[ -n "$( )" ]], ${x:-$( )}, the
+# $( ) in a for (( )), a subshell, a group, timeout 2, setsid -f and
+# env -i A=1, it is; `command -v curl` is a probe and "$cmd" a dynamic
+# word. A construct the two files do not use (eval, a $( ) inside a
+# heredoc) is one it may miss.
+read -r -d '' COMMANDS_AWK <<'AWK'
+# Prints "run NAME", "probe NAME" and "dynamic FILE:LINE" for the commands
+# the bash files it is given run. keywords= and builtins= come from the
+# bash that runs the suite (compgen -k, compgen -b), so neither list is
+# written out here to go stale.
+#
+# A stack of frames, one per context that changes what a word means: "cmd"
+# (the top level, a $( ), a ( ) subshell, an array literal), "dq" (inside
+# double quotes), "brace" (a ${ }), "arith" (a (( )) or $(( ))). Only a
+# cmd frame has command words; the others are skipped except for the cmd
+# frames nested in them, which is how "$(realpath ...)" is read and
+# "a message; with a semicolon" is not.
+function ch(k) { return substr(S, k, 1) }
+function lineat(k,   t) { t = substr(S, 1, k); return gsub(/\n/, "", t) + 1 }
+# A cmd frame starts its own word and gives the enclosing one back when it
+# closes: `x=$(cmd arg)` is one word outside and two inside. Shared, the
+# assignment's "x=" glued itself to `cmd` and hid it.
+function push(t, o) {
+    D++; T[D] = t; OP[D] = o; X[D] = (t == "cmd" && o != "arr"); M[D] = ""
+    CD[D] = 0; R[D] = 0; WS[D] = 0; P[D] = 0; BD[D] = 0
+    if (t == "cmd") {
+        SCUR[D] = CUR; SINW[D] = INW; SBARE[D] = BARE; SASSIGN[D] = ASSIGN
+        CUR = ""; INW = 0; BARE = 1; ASSIGN = 0
+    }
+}
+function pop() {
+    if (D <= 1) return
+    if (T[D] == "cmd") {
+        CUR = SCUR[D]; INW = SINW[D]; BARE = SBARE[D]; ASSIGN = SASSIGN[D]
+    }
+    D--
+}
+# ; & && || | and a newline: the next word is a command again -- except
+# inside [[ ]], a for header, a case header or a case pattern, where those
+# characters are operators or alternatives, not separators.
+function sep() {
+    if (M[D] == "test" || M[D] == "for" || M[D] == "case" || M[D] == "pat") return
+    if (OP[D] == "arr") return
+    M[D] = ""; X[D] = 1; R[D] = 0
+}
+# What the word just finished means. M[D] is the frame's mode: what the
+# words after a keyword or a wrapper are, until a separator ends it.
+function endword(   w, b, a) {
+    if (!INW) return
+    w = CUR; b = BARE; a = ASSIGN
+    CUR = ""; INW = 0; BARE = 1; ASSIGN = 0
+    if (R[D] == 2) { HD[++NHD] = w; R[D] = 0; return }   # a heredoc's delimiter
+    if (R[D] == 1) { R[D] = 0; return }                  # a redirection's target
+    if (M[D] == "pat") {
+        if (b && w == "esac") { CD[D]--; M[D] = ""; X[D] = 0 }
+        return
+    }
+    if (M[D] == "for") { if (b && w == "do") { M[D] = ""; X[D] = 1 }; return }
+    if (M[D] == "case") { if (b && w == "in") M[D] = "pat"; return }
+    if (M[D] == "test") { if (b && w == "]]") { M[D] = ""; X[D] = 0 }; return }
+    if (M[D] == "fname") { FN[w] = 1; M[D] = ""; return }
+    # `command -v NAME` asks whether NAME exists; it runs nothing.
+    if (M[D] == "probe") {
+        if (w ~ /^-/) return
+        print "probe " w; M[D] = ""; X[D] = 0; return
+    }
+    if (M[D] == "builtin-command") {
+        if (w == "-v" || w == "-V") { M[D] = "probe"; return }
+        if (w ~ /^-/) return
+        M[D] = ""; X[D] = 1
+    }
+    # A wrapper runs the word after its options (and, for timeout, after
+    # its duration; for env, after its assignments).
+    if (M[D] == "wrap") {
+        if (w ~ /^-/ || (b && w ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) return
+        if (WS[D] > 0) { WS[D]--; return }
+        M[D] = ""; X[D] = 1
+    }
+    if (!X[D]) return
+    if (a) return                     # NAME=value before the command
+    if (!b) { print "dynamic " FNAME ":" lineat(i); X[D] = 0; return }
+    if (w in KW) {
+        if (w == "fi" || w == "done" || w == "}") X[D] = 0
+        else if (w == "esac") { CD[D]--; M[D] = ""; X[D] = 0 }
+        else if (w == "for" || w == "select") { M[D] = "for"; X[D] = 0 }
+        else if (w == "case") { M[D] = "case"; CD[D]++; X[D] = 0 }
+        else if (w == "function") { M[D] = "fname"; X[D] = 0 }
+        else if (w == "[[") { M[D] = "test"; X[D] = 0 }
+        return
+    }
+    X[D] = 0
+    if (w in BI) {
+        if (w == "command") M[D] = "builtin-command"
+        else if (w == "exec") { M[D] = "wrap"; WS[D] = 0 }
+        return
+    }
+    RUN[w] = 1
+    if (w == "timeout") { M[D] = "wrap"; WS[D] = 1 }
+    else if (w == "setsid" || w == "nohup" || w == "env" || w == "nice" || w == "stdbuf") {
+        M[D] = "wrap"; WS[D] = 0
+    }
+}
+# A heredoc's body is data -- the engine's preset is one, and its JSON is
+# not commands. i sits just past the newline that ends the line holding the
+# <<: skip each pending body, in order, through its delimiter line.
+function heredocs(   line, j, h, strip) {
+    for (h = 1; h <= NHD; h++) {
+        while (i <= N) {
+            j = index(substr(S, i), "\n")
+            line = (j ? substr(S, i, j - 1) : substr(S, i))
+            i += (j ? j : length(S) - i + 1)
+            strip = line; sub(/^\t+/, "", strip)
+            if (line == HD[h] || strip == HD[h]) break
+        }
+    }
+    NHD = 0
+}
+# Past a $'...' string: a backslash escapes the next character, a quote ends it.
+function ansi() {
+    while (i <= N && ch(i) != "'") { if (ch(i) == "\\") i++; i++ }
+    i++
+}
+# The frames that may hold a command inside them, wherever they appear.
+function nested(c, nc) {
+    if (c == "$" && nc == "(" && ch(i + 2) == "(") { push("arith", ""); i += 3; return 1 }
+    if (c == "$" && nc == "(") { push("cmd", "$("); i += 2; return 1 }
+    if (c == "$" && nc == "{") { push("brace", ""); i += 2; return 1 }
+    return 0
+}
+function scan(text,   c, nc, j) {
+    S = text; N = length(S); i = 1; D = 0; push("cmd", "top")
+    CUR = ""; INW = 0; BARE = 1; ASSIGN = 0; NHD = 0
+    while (i <= N) {
+        c = ch(i); nc = ch(i + 1)
+        if (T[D] == "dq") {
+            if (c == "\\") { i += 2; continue }
+            if (c == "\"") { pop(); i++; continue }
+            if (nested(c, nc)) continue
+            i++; continue
+        }
+        if (T[D] == "brace") {
+            if (c == "\\") { i += 2; continue }
+            if (c == "$" && nc == "'") { i += 2; ansi(); continue }
+            if (c == "'") { j = index(substr(S, i + 1), "'"); i += (j ? j + 1 : N); continue }
+            if (c == "\"") { push("dq", ""); i++; continue }
+            if (nested(c, nc)) continue
+            if (c == "{") { BD[D]++; i++; continue }
+            if (c == "}") { if (BD[D] > 0) BD[D]--; else pop(); i++; continue }
+            i++; continue
+        }
+        if (T[D] == "arith") {
+            if (c == "$" && nc == "(" && ch(i + 2) != "(") { push("cmd", "$("); i += 2; continue }
+            if (c == "$" && nc == "{") { push("brace", ""); i += 2; continue }
+            if (c == "(") { P[D]++; i++; continue }
+            if (c == ")") { if (P[D] > 0) { P[D]--; i++ } else { pop(); i += 2 }; continue }
+            i++; continue
+        }
+        # A cmd frame.
+        if (c == "\\") {
+            if (nc == "\n") { endword(); i += 2; continue }   # a continued line
+            CUR = CUR nc; INW = 1; i += 2; continue
+        }
+        if (c == " " || c == "\t") { endword(); i++; continue }
+        if (c == "\n") { endword(); sep(); i++; if (NHD) heredocs(); continue }
+        if (c == "#" && !INW) { while (i <= N && ch(i) != "\n") i++; continue }
+        if (c == "'") {
+            j = index(substr(S, i + 1), "'")
+            CUR = CUR substr(S, i + 1, j ? j - 1 : N); INW = 1; BARE = 0
+            i += (j ? j + 1 : N); continue
+        }
+        if (c == "$" && nc == "'") { INW = 1; BARE = 0; i += 2; ansi(); continue }
+        if (c == "\"") { INW = 1; BARE = 0; push("dq", ""); i++; continue }
+        if (c == "$" && (nc == "(" || nc == "{")) { INW = 1; BARE = 0; nested(c, nc); continue }
+        if (c == "$") { INW = 1; BARE = 0; CUR = CUR c; i++; continue }
+        # Inside [[ ]], < > ( ) compare and group; they redirect nothing.
+        if (M[D] == "test" && (c == "<" || c == ">" || c == "(" || c == ")")) {
+            CUR = CUR c; INW = 1; i++; continue
+        }
+        if (c == "(") {
+            if (!INW && nc == "(") { push("arith", ""); i += 2; continue }
+            if (INW && nc == ")") {                      # name() -- a definition
+                FN[CUR] = 1; CUR = ""; INW = 0; BARE = 1; ASSIGN = 0; i += 2; continue
+            }
+            if (INW && ASSIGN && CUR ~ /=$/) { push("cmd", "arr"); i++; continue }
+            if (M[D] == "pat") { i++; continue }
+            endword(); push("cmd", "("); i++; continue
+        }
+        if (c == ")") {
+            endword()
+            if (M[D] == "pat") { M[D] = ""; X[D] = 1; i++; continue }   # a case arm
+            pop(); i++; continue
+        }
+        if (c == ";") {
+            endword()
+            if (nc == ";" || nc == "&") {                # ;; ;& ;;& end a case arm
+                i += 2; if (ch(i) == "&") i++
+                if (CD[D] > 0) { M[D] = "pat"; X[D] = 0 }
+                continue
+            }
+            sep(); i++; continue
+        }
+        if (c == "&") {
+            endword()
+            if (nc == ">") { i += 2; if (ch(i) == ">") i++; R[D] = 1; continue }
+            i += (nc == "&" ? 2 : 1); sep(); continue
+        }
+        if (c == "|") {
+            endword()
+            if (M[D] == "pat") { i++; continue }         # on|off)
+            i += (nc == "|" ? 2 : 1); if (ch(i) == "&") i++; sep(); continue
+        }
+        if (c == "<" || c == ">") {
+            # 2>/dev/null: the 2 is a descriptor, not a word.
+            if (INW && BARE && CUR ~ /^[0-9]+$/) { CUR = ""; INW = 0 } else endword()
+            if (nc == "(") { push("cmd", "<("); i += 2; continue }
+            if (substr(S, i, 3) == "<<<") { i += 3; R[D] = 1; continue }
+            if (substr(S, i, 2) == "<<") { i += 2; if (ch(i) == "-") i++; R[D] = 2; continue }
+            i++; while (ch(i) == ">" || ch(i) == "&" || ch(i) == "|") i++
+            R[D] = 1; continue
+        }
+        if (c == "=" && INW && BARE && CUR ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?$/) ASSIGN = 1
+        CUR = CUR c; INW = 1; i++
+    }
+    endword()
+}
+BEGIN {
+    n = split(keywords, a, " "); for (k = 1; k <= n; k++) KW[a[k]] = 1
+    n = split(builtins, a, " "); for (k = 1; k <= n; k++) BI[a[k]] = 1
+}
+# One scan per file; the functions any of them define are no command.
+FNR == 1 && NR > 1 { scan(TEXT); TEXT = "" }
+FNR == 1 { FNAME = FILENAME }
+{ TEXT = TEXT $0 "\n" }
+END {
+    scan(TEXT)
+    for (w in RUN) if (!(w in FN)) print "run " w
+}
+AWK
+# commands_of <file>...: "run NAME", "probe NAME", "dynamic FILE:LINE", sorted.
+commands_of() {
+    awk -v keywords="$(compgen -k | tr '\n' ' ')" -v builtins="$(compgen -b | tr '\n' ' ')" \
+        "$COMMANDS_AWK" "$@" | sort -u
+}
+FOUND=$(cd "$ROOT" && commands_of src/jayos-denoise src/easyeffects-lib.sh)
+RUNS=$(sed -n 's/^run //p' <<<"$FOUND")
+PROBES=$(sed -n 's/^probe //p' <<<"$FOUND")
+DYNAMIC=$(sed -n 's/^dynamic //p' <<<"$FOUND")
+
+# command, the package that installs it, and how the recipe declares it:
+# depends; optdepends (and probed with `command -v` before it is run, so the
+# engine works without it); or probed (run only when `command -v` finds it,
+# and needed by nothing). One row per command the code runs -- a command
+# with no row fails, and so does a row whose command the code no longer
+# runs, so the table cannot keep a package alive after its reason is gone.
+read -r -d '' TOOLS <<'TABLE'
+awk          gawk         depends
+basename     coreutils    depends
+cat          coreutils    depends
+dirname      coreutils    depends
+easyeffects  easyeffects  optdepends
+grep         grep         depends
+id           coreutils    depends
+jq           jq           depends
+mkdir        coreutils    depends
+mktemp       coreutils    depends
+mv           coreutils    depends
+pgrep        procps-ng    depends
+realpath     coreutils    depends
+rm           coreutils    depends
+sed          sed          depends
+setsid       util-linux   depends
+sleep        coreutils    depends
+socat        socat        depends
+systemctl    systemd      probed
+timeout      coreutils    depends
+TABLE
+
+if [[ -n "$RUNS" ]] && grep -qx jq <<<"$RUNS"; then
+    pass "the lexer reads $(grep -c . <<<"$RUNS") commands out of the engine and its library"
+else
+    bad "the lexer read no commands, or not jq, out of the engine and its library; nothing below examined anything"
+fi
+if [[ -z "$DYNAMIC" ]]; then
+    pass "and no command word that is an expansion, which no package could be named for"
+else
+    bad "a command run through an expansion, which no row can tie to a package, at: $(paste -sd' ' <<<"$DYNAMIC")"
+fi
+
+declare -A ROW_PKG=() ROW_HOW=() NEED=()
+while read -r tool pkg how; do
+    [[ -n "$tool" ]] || continue
+    ROW_PKG[$tool]=$pkg
+    ROW_HOW[$tool]=$how
+done <<<"$TOOLS"
+
+for tool in $RUNS; do
+    [[ -v ROW_PKG[$tool] ]] || bad "the engine runs $tool, which no row of this suite's table assigns to a package"
+done
+for tool in $(printf '%s\n' "${!ROW_PKG[@]}" | sort); do
+    pkg=${ROW_PKG[$tool]}
+    if ! grep -qx -- "$tool" <<<"$RUNS"; then
+        bad "the table names $tool, which the engine and its library no longer run; drop its row, and $pkg from the recipe if nothing else needs it"
+        continue
+    fi
+    case ${ROW_HOW[$tool]} in
+        depends)
+            NEED[$pkg]+=" $tool"
+            ;;
+        optdepends)
+            if recipe "for v in \"\${optdepends[@]}\"; do [[ \$v == '$pkg:'* ]] && exit 0; done; exit 1" \
+               && grep -qx -- "$tool" <<<"$PROBES"; then
+                pass "optdepends=() has $pkg, and the engine probes for $tool before it runs it"
+            else
+                bad "$tool is run as an optional dependency, but optdepends=() lacks $pkg or the code never probes for it with command -v"
+            fi
+            ;;
+        probed)
+            if grep -qx -- "$tool" <<<"$PROBES"; then
+                pass "$tool ($pkg) is run only where command -v finds it, so nothing declares it"
+            else
+                bad "$tool is in the table as probed, but the code never probes for it with command -v"
+            fi
+            ;;
+        *) bad "the row for $tool says '${ROW_HOW[$tool]}', which is not depends, optdepends or probed" ;;
+    esac
+done
+
+# The interpreter: the engine is started by its #! line, so that line's
+# programs are run as surely as anything in its body.
+shebang=$(head -n 1 "$ROOT/src/jayos-denoise")
+if [[ "$shebang" == '#!/usr/bin/env bash' ]]; then
+    NEED[bash]+=" bash(#!)"
+    NEED[coreutils]+=" env(#!)"
+else
+    bad "src/jayos-denoise starts '$shebang', not '#!/usr/bin/env bash'; this suite knows which packages only that line needs"
+fi
+
+for pkg in $(printf '%s\n' "${!NEED[@]}" | sort); do
+    if has depends "$pkg"; then
+        pass "depends=() has $pkg, for what the engine runs:${NEED[$pkg]}"
+    else
+        bad "depends=() lacks $pkg, and the engine runs${NEED[$pkg]}"
+    fi
+done
+# And nothing else: every entry is the plugin's NEEDED half or a package the
+# engine runs, so a package whose last command was dropped goes with it.
+for pkg in $(recipe 'printf "%s\n" "${depends[@]}"'); do
+    case $pkg in
+        glibc|gcc-libs) ;;
+        *) [[ -v NEED[$pkg] ]] || bad "depends=() names $pkg, which nothing the package runs or links needs" ;;
+    esac
 done
 
 echo

@@ -11,7 +11,7 @@ file list; the `_commit=` line of `packaging/arch/PKGBUILD` is the pin, and
 `tests/shell/test-engine.sh` fails unless the table under *Strength* states
 them.
 
-This preface is current on 2026-10-03. Everything after it MOVED HERE from
+This preface is current on 2026-10-04. Everything after it MOVED HERE from
 jayos when the engine and the plugin did, verbatim, from `docs/AUDIO.md` at
 jayos commit `bf53d6a`: that file's lines 347-864, less what is marked
 `[...]` -- lines 596-641, 663-742, 782, 800-804, and 836 through the first
@@ -26,7 +26,7 @@ jayos's at that commit.** Where the things it names are now:
 |---|---|
 | `pkgbuilds/deepfilternet-ladspa/PKGBUILD`, the recipe, with its `_commit` and its `pkgver` | `packaging/arch/PKGBUILD` names the sources and holds the pin, `_commit=`, on one line; its `pkgver` is `VERSION`'s, written out. jayos builds this package with a recipe of its own, `pkgbuilds/jayos-denoise/PKGBUILD` there, from this repository's `main` branch. Both call `packaging/steps.sh` for every step. |
 | That recipe's `prepare()`, `build()`, `check()` and `package()` | `packaging/steps.sh checkout` and `fetch`; `build`; `check`; `package` |
-| `config/common/scripts/hypr/denoise.sh`: `strength_params()`, `load_preset`, `set`, `apply` | `src/jayos-denoise`, installed as `/usr/bin/jayos-denoise`, with the same code and no settings: `set` and `apply` are told the state and the strength. jayos kept a `hypr/denoise.sh` at the same path, which reads its settings and calls this. |
+| `config/common/scripts/hypr/denoise.sh`: `strength_params()`, `load_preset`, `set`, `apply` | `src/jayos-denoise`, installed as `/usr/bin/jayos-denoise`, with no settings: `set` and `apply` are told the state and the strength. Not otherwise the same code: it has a `strengths` verb and no `build`, its own remedies, a refusal of a library that will not load, and `apply`'s two failures on stdout. The *MOVED HERE* paragraph at the head of that file lists every difference. jayos kept a `hypr/denoise.sh` at the same path, which reads its settings and calls this. |
 | `config/common/scripts/easyeffects-lib.sh` | `src/easyeffects-lib.sh`, a copy; its header names the two edits |
 | `tools/test-easyeffects.sh`: the cases that drove `denoise.sh`, and the comparison of the *Strength* table at its lines 3316-3343 | `tests/shell/test-engine.sh` |
 | `tools/test-installers.sh`'s block on the recipe | `tests/shell/test-packaging.sh` (the recipe), `tests/shell/test-steps.sh` (the steps, against fakes) and `tests/shell/test-source-guards.sh` (the cargo flags) |
@@ -248,6 +248,11 @@ through the unit when it is installed and by hand otherwise — never by hand
 beside a process that is still starting — and waits for it to listen before
 it loads.
 
+*[Here `apply` says so on stdout, as it says everything it exits 0 after:
+its status is 0 either way, so its lines are the whole report, and on
+stderr its failures were the one part a caller that kept stdout alone never
+heard. The head of the `apply` arm in `src/jayos-denoise` says more.]*
+
 ### A preset you chose wins at login
 
 Two verbs, two rules. `denoise.sh apply` is the login path: it reads
@@ -358,14 +363,20 @@ also checks the engine -- it parses, it names its strengths, and every preset
 it would write is JSON -- and `package` installs, beside the `.so`, the
 engine and its library, the contract, this repository's `LICENSE` and
 `THIRD_PARTY.md` with the fork's three licence files, and this document with
-`README.md`. The preface has the times measured on 2026-10-03.]*
+`README.md`. `depends=` is no longer the two packages `check()`'s row names:
+glibc and gcc-libs are the plugin's share, and the rest are the engine's,
+each tied by `tests/shell/test-packaging.sh` to a command the engine or its
+library runs. The preface has the times measured on 2026-10-03.]*
 
 ### Turning it on
 
 [...] *Lines 663-742 at `bf53d6a`, omitted: jayos's settings rows and
 volume popup, how they write and poll, and the `Config.qml` defect this
 feature exposed there. The paragraph below is about EasyEffects, and is as
-true without jayos as with it.*
+true without jayos as with it except for its last sentence: the unit that
+starts EasyEffects at every login is jayos's own `easyeffects.service`,
+which neither EasyEffects nor this package ships. Without jayos the routing
+happens whenever whatever you use has EasyEffects running.*
 
 What applications hear is EasyEffects' virtual source — `easyeffects_source`
 is its node name, which `wpctl status -n` shows; plain `wpctl status` and an
@@ -436,7 +447,13 @@ up.
 `jayos-denoise set on gentle`, `jayos-denoise set on balanced` and
 `jayos-denoise set on maximum`. In step 2, `loaded` is true when the preset
 file exists and `denoise` is what the input pipeline holds: the running
-daemon's answer, or with nothing running the rc file's.]*
+daemon's answer, or with nothing running the rc file's. And with no
+`easyeffects.service` -- jayos's unit, which neither EasyEffects nor this
+package ships -- step 1's two `systemctl` lines fail with "Unit
+easyeffects.service not loaded": quit EasyEffects however it was started,
+run `RUST_LOG=debug easyeffects --debug` as written, and start it again your
+usual way afterwards. The plugin's warnings then go to that process's
+stderr, not to `journalctl --user -u easyeffects.service`.]*
 
 ### Limits, honestly
 

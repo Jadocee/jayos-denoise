@@ -75,8 +75,11 @@
 # directory and the engine with no library beside it, the source guards
 # applied to the library's copy as well, another user's instance, a daemon
 # that hears and does not answer, a daemon that cannot take a connection, a
-# 7.x tree, the remedy without LADSPA_PATH, and a whole-run check that
-# nothing was detached and no session tool was called.
+# 7.x tree, the remedy without LADSPA_PATH, apply's failures heard with
+# stderr thrown away, status with ours named and its file gone, and a
+# whole-run check that nothing was detached and no session tool was called.
+# And one brought over later from jayos's suite: the readiness probe against
+# a daemon that cannot take a connection, timed.
 
 set -uo pipefail
 
@@ -990,6 +993,18 @@ check "running" true "$(jq -r .running <<<"$OUT")"
 check "presetFile is the file set wrote" "$FILE" "$(jq -r .presetFile <<<"$OUT")"
 check "presetExists" true "$(jq -r .presetExists <<<"$OUT")"
 check "and the plugin path" "$WORK/ladspa/libdeep_filter_ladspa.so" "$(jq -r .pluginPath <<<"$OUT")"
+# New here: the other half of loaded's conjunction. The daemon still names
+# ours and the file is gone -- ours named is not ours loaded, and jayos's
+# doctor would otherwise print "loaded in the input pipeline"
+# (doctor.d/50-hardware.sh) over a preset EasyEffects cannot read. RUN with
+# loaded reduced to the name alone: this case failed and nothing else did.
+# Put back after, so the off case below starts where it did.
+cp "$FILE" "$WORK/denoise.json.kept"; rm -f "$FILE"
+OUT=$(run "$ENGINE" status 2>/dev/null)
+check "status with ours named and its file gone: loaded false" false "$(jq -r .loaded <<<"$OUT")"
+check "and presetExists false" false "$(jq -r .presetExists <<<"$OUT")"
+check "though inputPreset still names ours" denoise "$(jq -r .inputPreset <<<"$OUT")"
+mv "$WORK/denoise.json.kept" "$FILE"
 
 # Off while ours is loaded: the same file, bypassed, reloaded. Adapted: the
 # strength is handed over (it was read from settings.json).
@@ -1066,6 +1081,27 @@ OUT=$(run "$ENGINE" set on balanced 2>&1); STATUS=$?
 check "set on against a daemon that hears and never answers exits 1" 1 "$STATUS"
 log_has "though the load was heard" "heard load_preset:input:denoise"
 says_not "and does not claim the filter is on" "noise suppression on" "$OUT"
+
+# New here: apply's two failures, with stderr thrown away. apply exits 0
+# whatever happened, so its lines are the whole report, and every one it
+# exits 0 after is on stdout (src/jayos-denoise, the head of its apply arm);
+# these two were on stderr, so a caller that kept stdout alone -- a $(...)
+# -- heard nothing at all of the one thing worth hearing.
+fresh; mkdir -p "$DATA"; up; current ""; : > "$WORK/ignore_loads"; clear_log
+OUT=$(run "$ENGINE" apply on balanced 2>/dev/null); STATUS=$?
+check "apply on, stdout alone, against a daemon that ignores the load: exits 0" 0 "$STATUS"
+says "and says on stdout that it did not load" "jayos-denoise: easyeffects did not load denoise" "$OUT"
+says_not "and does not claim it loaded" "jayos-denoise: loaded" "$OUT"
+# Off's reload: ours on disk and named by the rc, a daemon that hears and
+# never answers -- so what it holds is the rc's word, ours, and the reload
+# is never confirmed.
+fresh; our_file gentle; up; current denoise
+rc $'[Presets]\nlastLoadedInputPreset=denoise'
+printf 'get_last_loaded_preset' > "$WORK/no_answer"; clear_log
+OUT=$(run "$ENGINE" apply off gentle 2>/dev/null); STATUS=$?
+check "apply off, stdout alone, when the reload is never confirmed: exits 0" 0 "$STATUS"
+log_has "the reload was sent" "heard load_preset:input:denoise"
+says "and says on stdout that it did not reload" "jayos-denoise: easyeffects did not reload the preset" "$OUT"
 
 # ── set starts an instance; apply never does ─────────────────────────────────
 #
@@ -1160,10 +1196,35 @@ RUN_LIMIT=""
 ELAPSED_MS=$(( ($(date +%s%N) - T0) / 1000000 ))
 check "a daemon that cannot take a connection: status answers from the rc" "mine false" \
     "$(jq -r '[.inputPreset, (.loaded | tostring)] | join(" ")' <<<"$OUT" 2>/dev/null)"
-if (( ELAPSED_MS < 3000 )); then
-    pass "and at once, not after a wait per question ($ELAPSED_MS ms)"
+# Under a second, not jayos's 3000 ms. jayos's easyeffects.sh status asks
+# the daemon three questions; this status asks one (ee_current_preset
+# input), and ee_socket's `timeout 2` is what one stalled ask costs. With
+# 3000, a lost connect-timeout -- every ask then waiting the full two
+# seconds -- passed here at about 2000 ms; under 1000 it fails, and the
+# unmutated run takes tens of milliseconds (RUN both ways, 2026-10-04).
+if (( ELAPSED_MS < 1000 )); then
+    pass "and at once, not after a wait for its one question ($ELAPSED_MS ms)"
 else
-    bad "status against a daemon with a full queue took $ELAPSED_MS ms"
+    bad "status against a daemon with a full queue took $ELAPSED_MS ms; one stalled ask is two seconds"
+fi
+# The readiness probe is a connection as well (the lib's ee_listening), with
+# a connect-timeout of its own that status never exercises -- status asks
+# through ee_socket -- and every wait loop runs it twice a second. Without
+# that bound each probe of this daemon lasts the whole two seconds (RUN
+# here: 2019 ms, where it takes tens of milliseconds with it), so a
+# twenty-second wait takes about a hundred. jayos's tools/test-easyeffects.sh
+# holds its copy of the lib to this; this is the same case over this copy.
+# Capped, and timed.
+T0=$(date +%s%N)
+RUN_LIMIT=5
+READY=$(run -c "source '$LIB'; ee_ready && echo ready || echo 'not ready'" 2>/dev/null)
+RUN_LIMIT=""
+ELAPSED_MS=$(( ($(date +%s%N) - T0) / 1000000 ))
+check "and it is not called ready" "not ready" "$READY"
+if (( ELAPSED_MS < 1000 )); then
+    pass "and the probe says so at once, not at its two-second bound ($ELAPSED_MS ms)"
+else
+    bad "the readiness probe against a daemon with a full queue took $ELAPSED_MS ms"
 fi
 clear_log
 RUN_LIMIT=60
@@ -1521,6 +1582,18 @@ if [[ ! -e "$FILE" ]]; then
 else
     bad "set on without socat wrote $FILE"
 fi
+
+# New here: apply on without socat, against a socket file -- all that can be
+# known of readiness with no client (the lib's ee_listening). load_preset's
+# "socat is not installed" is folded onto stdout with the rest of apply's
+# report, so stderr thrown away loses neither line.
+fresh; mkdir -p "$DATA"; up; clear_log
+WITHOUT=socat
+OUT=$(run "$ENGINE" apply on balanced 2>/dev/null); STATUS=$?
+WITHOUT=""
+check "apply on without socat, stdout alone: exits 0" 0 "$STATUS"
+says "and names socat on stdout" "jayos-denoise: socat is not installed" "$OUT"
+says "and says it did not load" "jayos-denoise: easyeffects did not load denoise" "$OUT"
 
 # ── run through a symlink ────────────────────────────────────────────────────
 #

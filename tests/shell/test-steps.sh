@@ -6,9 +6,13 @@
 #
 # Exit 0: every case passed. 1: a case failed. 2: could not run -- no git
 # (the checkout cases need a real repository), no jq (check's engine half and
-# the installed engine's status run it), or no gzip (the model stand-ins are
-# real gzip streams) -- which is not the same answer as "nothing is wrong" and
-# must not be reported as one.
+# the installed engine's status run it), no gzip or tar (the model stand-ins
+# are real gzip'd tarballs), no od (their first three bytes are read with
+# it, as steps.sh's findable() reads them), or no cmp (each installed file
+# is compared with its source) -- which is not the same answer as "nothing
+# is wrong" and must not be reported as one. Every exit 2 is taken before
+# the first case runs: one taken after cases had counted would have turned
+# a failure already found into tools/check.sh's "not exercised".
 #
 # WHAT IS REAL AND WHAT IS FAKED
 #
@@ -37,7 +41,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-for tool in git jq gzip; do
+for tool in git jq gzip tar od cmp; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "$(basename "$0"): $tool is not installed; these tests cannot run" >&2
         exit 2
@@ -47,6 +51,29 @@ done
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/denoise-steps-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 WORK=$(realpath "$WORK")
+
+# THE PLUGIN TREE: the two model tarballs where the fork keeps them, real
+# gzip streams of different content, and a stand-in .so built out of them
+# (below, with the check cases). Made here rather than beside those cases:
+# making it is the one thing after the tool list above that can still say
+# "could not run", and here it says so before any case has counted. Made
+# where the check cases are, its exit 2 came after the thirty-six
+# assertions of the pin, checkout, fetch and build cases had run (counted
+# on 2026-10-04), so a failure among them reached tools/check.sh as "not
+# exercised".
+PLUG="$WORK/plugin"
+SO="$PLUG/target/release/libdeep_filter_ladspa.so"
+mkdir -p "$PLUG/models" "$PLUG/target/release" "$WORK/m/full" "$WORK/m/ll"
+for n in $(seq 1 400); do printf 'full-model layer %04d weights\n' "$n"; done > "$WORK/m/full/enc.onnx"
+for n in $(seq 1 400); do printf 'low-latency layer %04d weights\n' "$n"; done > "$WORK/m/ll/enc.onnx"
+tar -C "$WORK/m/full" -czf "$WORK/full.tar.gz" enc.onnx
+tar -C "$WORK/m/ll" -czf "$WORK/ll.tar.gz" enc.onnx
+for t in full ll; do
+    if [[ "$(head -c 3 "$WORK/$t.tar.gz" | od -An -tx1 | tr -d ' ')" != "1f8b08" ]]; then
+        echo "$(basename "$0"): the $t stand-in is not a gzip stream; these tests cannot run" >&2
+        exit 2
+    fi
+done
 
 PASS=0
 FAIL=0
@@ -249,6 +276,23 @@ else
     bad "the failed checkout moved HEAD to $(git -C "$FORK" rev-parse HEAD)"
 fi
 
+# An annotated tag's own id is forty hex digits that `git checkout --detach`
+# accepts and peels to the commit it names, so HEAD is not the pin -- the
+# trap packaging/arch/PKGBUILD's header warns about, since the fork's v1.0.2
+# is annotated. Only the proof after the checkout refuses it: RUN with that
+# line deleted from step_checkout, this checkout exited 0. The tag is on C2,
+# where the fork already is, so the cases after this one start where they
+# did.
+git -C "$FORK" tag -a -m v1 v1 "$C2"
+TAG_ID=$(git -C "$FORK" rev-parse v1)
+if [[ "$TAG_ID" =~ ^[0-9a-f]{40}$ && "$TAG_ID" != "$C2" ]]; then
+    pin_to "$TAG_ID"
+    steps checkout "$FORK"
+    expect_fail "an annotated tag's object id is refused, though git checks it out" "after checking out"
+else
+    bad "the annotated tag's id is '$TAG_ID', not forty hex digits other than $C2; this case examined nothing"
+fi
+
 pin_to "$C2"
 mkdir -p "$WORK/plain"
 steps checkout "$WORK/plain"
@@ -353,22 +397,8 @@ expect_fail "fetch of a directory that does not exist fails" "no plugin tree at"
 echo
 echo "check: what was built, proved"
 
-# THE PLUGIN TREE: the two model tarballs where the fork keeps them, real
-# gzip streams of different content, and a stand-in .so built out of them.
-PLUG="$WORK/plugin"
-SO="$PLUG/target/release/libdeep_filter_ladspa.so"
-mkdir -p "$PLUG/models" "$PLUG/target/release" "$WORK/m/full" "$WORK/m/ll"
-for n in $(seq 1 400); do printf 'full-model layer %04d weights\n' "$n"; done > "$WORK/m/full/enc.onnx"
-for n in $(seq 1 400); do printf 'low-latency layer %04d weights\n' "$n"; done > "$WORK/m/ll/enc.onnx"
-tar -C "$WORK/m/full" -czf "$WORK/full.tar.gz" enc.onnx
-tar -C "$WORK/m/ll" -czf "$WORK/ll.tar.gz" enc.onnx
-for t in full ll; do
-    if [[ "$(head -c 3 "$WORK/$t.tar.gz" | od -An -tx1 | tr -d ' ')" != "1f8b08" ]]; then
-        echo "$(basename "$0"): the $t stand-in is not a gzip stream; these tests cannot run" >&2
-        exit 2
-    fi
-done
-
+# The model tarballs are made at the top, before any case (see there).
+#
 # Padding with no gzip anchor in it, and a decoy: an anchor followed by
 # bytes that are no tarball, BEFORE the real one, so embeds() has to keep
 # looking past the first place the three bytes occur.
@@ -431,9 +461,9 @@ TREE_FULL_STAR=$(sed 's/feature "default-model"$/feature "default-model" (*)/' <
 TREE_LL_STAR="$TREE_FULL
 │   └── deep_filter feature \"default-model-ll\" (*)"
 
-# Symbols as the real plugin's nm -D prints them: 117, two of them with
-# "ladspa_descriptor" in the name. Only the second is the one EasyEffects
-# dlsyms.
+# Symbols as the real plugin's nm -D prints them -- 117 lines there: two
+# exported (T), both with "ladspa_descriptor" in the name, and 115 imports
+# (107 U, 8 w). Only the second T is the one EasyEffects dlsyms.
 NM_OK='                 w __cxa_finalize@GLIBC_2.2.5
 0000000000a8efb0 T get_ladspa_descriptor
 0000000000a9b4e0 T ladspa_descriptor
@@ -587,6 +617,13 @@ check_tree sed -i 's/"bypass": \$2,/"bypass": $2/' "$REPO/src/jayos-denoise"
 expect_fail "a preset that is not JSON fails" "is not JSON with the filter on"
 check_tree sed -i 's/"bypass": \$2,/"bypass": false,/' "$REPO/src/jayos-denoise"
 expect_fail "a preset whose off does not bypass fails" "off, is not JSON with the filter bypassed"
+# The two cases above break the heredoc every strength shares, so a check
+# that looked at the first strength alone would fail them too. This one
+# breaks the last strength's arm and nothing else -- an empty number, so
+# that preset alone is no JSON. RUN against a check_engine narrowed to the
+# first strength: that let it through with exit 0.
+check_tree sed -i 's/^        maximum)  ATTEN=100\.0;/        maximum)  ATTEN=;/' "$REPO/src/jayos-denoise"
+expect_fail "a preset broken for the last strength alone fails, naming it" "the maximum preset is not JSON with the filter on"
 
 echo
 echo "package: the installed layout"

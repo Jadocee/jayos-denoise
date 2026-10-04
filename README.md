@@ -84,11 +84,16 @@ undone at the next start unless `apply off` follows it.
     tools/check.sh
 
 Parses every script, compares `contract/` with what the code produces, and
-runs every suite in `tests/shell/`. Exit 0 is clean, 1 is a failure, 2 is
-"could not run" (no jq, python3, socat, git or gzip, or no Unix socket to
-bind) -- which is not the same answer as clean and is not reported as one.
-It builds nothing: the plugin's proofs are `packaging/steps.sh check`, which
-makepkg runs as the recipe's `check()`.
+runs every suite in `tests/shell/`. Exit 0 is: everything that ran passed.
+A case a suite could not ask on this machine -- the remedy printed with
+`LADSPA_PATH` unset, where the plugin is installed, say -- leaves it at 0,
+but is named in the summary under its suite, and the last line counts it
+rather than ending on the bare `ok, nothing to fix` a run that asked
+everything prints. 1 is a failure. 2 is "could not run" (no jq, python3,
+socat, git, gzip, tar, od or cmp, or no Unix socket to bind) -- which is not
+the same answer as clean and is not reported as one. It builds nothing: the
+plugin's proofs are `packaging/steps.sh check`, which makepkg runs as the
+recipe's `check()`.
 
 ## Licence
 

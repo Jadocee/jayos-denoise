@@ -6,10 +6,13 @@
 # options: the caller's `set -u` and pipefail stay the caller's.
 #
 # A COPY. This is JayOS's config/common/scripts/easyeffects-lib.sh at jayos
-# commit bf53d6a, where hypr/easyeffects.sh, music/equalizer.sh and the
-# noise-suppression script that became jayos-denoise all sourced it. JayOS
-# keeps its own for the first two, so there are two copies, and a fix to one
-# is a fix to one: diff against that commit to carry a change across.
+# commit bf53d6a, where hypr/easyeffects.sh, music/equalizer.sh,
+# hypr/app-install.sh and the noise-suppression script that became
+# jayos-denoise (hypr/denoise.sh) all sourced it. JayOS keeps its own for the
+# first three, and for the hypr/denoise.sh that is now its settings wrapper
+# (which asks it ee_installed, ee_running and the like), so there are two
+# copies, and a fix to one is a fix to one: diff against that commit to
+# carry a change across.
 #
 # Not a dependency on JayOS, which would make this package need the desktop it
 # was moved out of -- the coupling the move exists to remove. Whole, not
@@ -18,7 +21,7 @@
 # became jayos-denoise). Two edits:
 #
 #   - this paragraph and the one above it replace the original's sentence
-#     naming its three sourcers;
+#     naming three of its sourcers (it missed hypr/app-install.sh);
 #   - ee_apply_noise_setting is gone from the end. It spawned JayOS's
 #     hypr/denoise.sh by a path relative to the library, which does not exist
 #     here; the shell that starts EasyEffects is what has to call `apply`.

@@ -31,7 +31,9 @@
 # nothing; that inside one it parses untracked scripts too, skips ignored
 # ones and does not report a deleted tracked file; that a suite exiting 2
 # makes it 2, a failing one 1, both together 1, one killed by a signal 1, and
-# no suites at all 2; and that a stale contract fails it.
+# no suites at all 2; that a suite which passed with counted skips leaves it
+# at 0 but names each skipped case and does not end on the bare clean line;
+# and that a stale contract fails it.
 #
 # Every case copies the tree first -- contract.sh and check.sh derive their
 # root from their own path, so a copy's scripts read and write the copy --
@@ -501,6 +503,30 @@ status_is "a suite exiting 2 makes check.sh exit 2" 2
 says "and it is listed as not exercised" "not exercised: tests/shell/test-s2-2.sh"
 lacks_line "and nothing is listed as failed" "FAILED:"
 lacks_line "and it does not end clean" "ok, nothing to fix"
+
+# A SUITE THAT SKIPPED A CASE AND PASSED. Its 0 stays 0 -- a machine that
+# cannot ask one case is not a machine with findings -- but the run must not
+# end on the line a run that asked everything prints: the summary names the
+# case, under its suite, and the last line counts it. Two skip lines in one
+# suite, so the count is of cases and not of suites; and a "skip" that is
+# not the counted marker's shape (no two-space indent) is not counted.
+D=$(stubbed 0)
+printf '%s\n' '#!/usr/bin/env bash' \
+    "printf '  skip the x case not exercised: no y\\n'" \
+    "printf '  skip the z case not exercised: no w\\n'" \
+    "printf 'skip-like line in some output\\n'" \
+    "exit 0" > "$D/tests/shell/test-skips.sh"
+checksh "$D"
+status_is "a suite that passed with two counted skips leaves check.sh at 0" 0
+if grep -qx 'ok, nothing to fix' <<<"$OUT"; then
+    bad "and it still ends on the bare 'ok, nothing to fix' a full run prints"
+else
+    pass "and it does not end on the bare 'ok, nothing to fix' a full run prints"
+fi
+says "the summary names each case under its suite" \
+    "  tests/shell/test-skips.sh: the x case not exercised: no y"
+says "the second as well" "  tests/shell/test-skips.sh: the z case not exercised: no w"
+says "and the last line counts the cases" "ok, nothing to fix; 2 case(s) not exercised, listed above"
 
 D=$(stubbed 0 1)
 checksh "$D"

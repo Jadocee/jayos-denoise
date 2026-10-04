@@ -90,11 +90,17 @@ step_checkout() {
     local tree pin head
     tree=$(tree_arg "${1:-}") || exit 1
     pin=$(pinned_commit) || exit 1
-    # makepkg's clone of a git source holds every ref of its mirror, so the
-    # commit is there without the network whenever the fork still has it
-    # reachable -- v1.0.2 is the tag that names it. A recipe that already
-    # asked makepkg for #commit= gets a checkout of the same commit, which is
-    # then proved like any other.
+    # makepkg's working copy of a git source is a shared clone (`git clone
+    # -s`) of its mirror, so it reads every object the mirror fetched
+    # through objects/info/alternates, not only what its own branches and
+    # tags reach. That makepkg clones that way is READ (libmakepkg's
+    # source/git.sh); the alternates half is RUN with git alone: a shared
+    # clone of a --mirror, holding only refs/heads and refs/remotes, checked
+    # out a commit that only the mirror's refs/pull/1/head reached. So the
+    # pinned commit is there without the network whenever the fork still
+    # has it reachable from any ref -- v1.0.2 is the tag that names it. A
+    # recipe that already asked makepkg for #commit= gets a checkout of the
+    # same commit, which is then proved like any other.
     git -C "$tree" -c advice.detachedHead=false checkout --quiet --detach "$pin" 2>/dev/null \
         || die "commit $pin is not in $tree; the fork no longer has it, or the clone is not of the fork"
     head=$(git -C "$tree" rev-parse HEAD 2>/dev/null) || die "git could not say what $tree holds"
@@ -154,8 +160,9 @@ findable() { # findable <tarball>
     [[ -f "$1" && $(head -c 3 "$1" | od -An -tx1 | tr -d ' \n') == 1f8b08 ]]
 }
 
-# 0 when every NEEDED entry of the .so belongs to glibc or gcc-libs, the two
-# packages depends= names.
+# 0 when every NEEDED entry of the .so belongs to glibc or gcc-libs, the
+# plugin's share of depends= (the rest are the engine's, and
+# tests/shell/test-packaging.sh ties each to a command the engine runs).
 #
 # A SUBSET, not an equal list: a toolchain that drops the loader (TLSDESC) or
 # libm is still covered, while a libstdc++ or libhdf5 that nothing in
@@ -236,7 +243,9 @@ check_plugin() { # check_plugin <tree>
     # Read whole before it is searched: piped into `grep -q`, which stops at
     # the first match, nm takes a SIGPIPE writing the rest, and under this
     # script's pipefail that 141 failed a .so that does export the symbol --
-    # RUN, against the built plugin, which exports 117.
+    # RUN, against the built plugin, whose nm -D list is 117 lines: two of
+    # them exported (ladspa_descriptor and get_ladspa_descriptor), the
+    # other 115 imports.
     syms=$(nm -D "$so") || die "nm could not read the dynamic symbols of $SO_NAME"
     grep -q ' T ladspa_descriptor$' <<<"$syms" \
         || die "$SO_NAME exports no ladspa_descriptor"

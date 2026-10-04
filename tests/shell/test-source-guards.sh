@@ -287,9 +287,10 @@ fi
 # And no pipe into `grep -q`: grep -q exits at the first match, the producer
 # takes a SIGPIPE writing the rest, and under steps.sh's pipefail that 141
 # failed `nm -D ... | grep -q ladspa_descriptor` over a .so that exports it
-# -- RUN against the built plugin, which exports 117 symbols (steps.sh,
-# check_plugin). The engine and the library run under the same pipefail and
-# are held to it as well. Read whole, then searched: `<<<"$var"`.
+# -- RUN against the built plugin, whose nm -D list is 117 lines, two of
+# them exported and the other 115 imports (steps.sh, check_plugin). The
+# engine and the library run under the same pipefail and are held to it as
+# well. Read whole, then searched: `<<<"$var"`.
 #
 # A cargo command is found where a command starts -- line start, or after
 # ; & | ( { or $( -- so `die "cargo build failed"` is a message and not one;

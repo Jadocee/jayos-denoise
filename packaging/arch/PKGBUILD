@@ -46,11 +46,17 @@ url="https://github.com/Jadocee/jayos-denoise"
 # the user's option, which SPDX spells with OR. Both texts are installed.
 license=('MIT' 'MIT OR Apache-2.0')
 # glibc and gcc-libs for the plugin, whose NEEDED list is libc, libm,
-# libgcc_s and the loader (steps.sh proves it on every build). bash, jq and
-# socat for the engine: socat is the client for EasyEffects' socket, and jq
-# writes and validates every JSON it emits. procps-ng for pgrep, util-linux
-# for setsid, gawk for the rc reader.
-depends=('glibc' 'gcc-libs' 'bash' 'jq' 'socat' 'procps-ng' 'util-linux' 'gawk')
+# libgcc_s and the loader (steps.sh proves it on every build). The rest for
+# the engine, a package for every command it or its library runs: bash,
+# through env in its #! line; socat, the client for EasyEffects' socket; jq,
+# which writes and validates every JSON it emits; procps-ng for pgrep,
+# util-linux for setsid, gawk for the rc reader; and coreutils, sed and
+# grep. Every package here but jq and socat comes with Arch's base, and each
+# is listed anyway: this is every package the engine needs, not the ones a
+# system might lack. tests/shell/test-packaging.sh reads the commands out of
+# the code and holds this list to them both ways -- a command no package
+# here installs fails it, and so does a package here that nothing runs.
+depends=('glibc' 'gcc-libs' 'bash' 'jq' 'socat' 'procps-ng' 'util-linux' 'gawk' 'coreutils' 'sed' 'grep')
 # cargo is provided by the rustup package as well as by rust, so either
 # toolchain satisfies makepkg; git is for the source line and the checkout.
 makedepends=('cargo' 'git')
