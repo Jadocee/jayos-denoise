@@ -1,0 +1,493 @@
+#!/usr/bin/env bash
+#
+# Microphone noise suppression: DeepFilterNet 3, through EasyEffects.
+#
+#   jayos-denoise status                     JSON: installed, running, plugin, pluginPath, layout,
+#                                            presetsRoot, presetFile, presetExists, inputPreset,
+#                                            loaded
+#   jayos-denoise preset <strength> [off]    print the preset JSON that `set` would write
+#   jayos-denoise set on|off [strength]      write the preset, start EasyEffects if needed, load it
+#   jayos-denoise apply on|off [strength] [--force]
+#                                            the login path: waiting for the instance something
+#                                            else starts, leaving a foreign preset alone
+#   jayos-denoise strengths                  the strength names, one per line
+#
+# A strength is gentle, balanced or maximum; left out, it is balanced.
+#
+# WHAT THIS IS
+#
+# EasyEffects' "Deep Noise Remover" is DeepFilterNet's LADSPA plugin, opened
+# at runtime from /usr/lib/ladspa/libdeep_filter_ladspa.so. The plugin is in
+# no Arch repository; this package builds it from a pinned commit of the
+# DeepFilterNet Plus fork with the full DeepFilterNet3 model embedded
+# (packaging/arch/PKGBUILD's _commit, docs/DEEPFILTERNET.md). This script is
+# everything between that file and a switch: it writes ONE input preset,
+# `denoise`, from a strength name, and asks the running instance to load it.
+#
+# It knows nothing about whether noise suppression SHOULD be on. That is a
+# person's setting, and the setting belongs to whatever draws the switch:
+# JayOS's config/common/scripts/hypr/denoise.sh owns micDenoise and
+# micDenoiseStrength and calls this with the answer. A package that read a
+# desktop's settings file would be a package that breaks when the desktop
+# moves the file -- so `apply` is told on or off and a strength, and reads
+# neither.
+#
+# THREE RULES, EACH LEARNED FROM UPSTREAM
+#
+#  1. Off is `"bypass": true` inside the same preset, still loaded -- never a
+#     preset without the plugin. EasyEffects' own deepfilternet.cpp keeps
+#     its clear_data() disabled because the plugin "does not seem to destroy
+#     its threads properly", citing a comment on wwmm/easyeffects#4652;
+#     flipping bypass leaves it alive and idle.
+#  2. Never the global bypass -- `easyeffects -b`, or global_bypass on the
+#     socket. It is both pipelines at once, and it would silence the
+#     equaliser on the speakers to mute a filter on the microphone.
+#  3. A preset somebody loaded by hand wins at login. `apply` runs on every
+#     login and loads ours only when the input pipeline holds nothing or
+#     already holds ours. `set on` is an explicit act from a toggle and always
+#     loads, saying what it replaced; `set off` only ever reloads ours, since
+#     off must never replace a preset somebody chose.
+#
+# MOVED HERE from JayOS, where it was config/common/scripts/hypr/denoise.sh
+# at jayos commit bf53d6a. Every difference in the code -- comments aside --
+# for whoever carries a fix across by diff:
+#
+#   - The settings. settings.sh is not sourced. The two reads of
+#     settings.json became arguments: `apply` takes on|off and a strength,
+#     with --force before or after the strength, where it took --force
+#     alone, and refuses a missing state with exit 1. `status` lost the two
+#     keys that came from it (enabled, strength -- JayOS's wrapper adds them
+#     back). With no saved strength to fall back on, a strength left out,
+#     or one off and apply do not know, is balanced (DEFAULT_STRENGTH).
+#   - The remedies. With no plugin, `set on` and `apply on` say where
+#     EasyEffects looked and name `pacman -Qkk jayos-denoise`
+#     (plugin_not_found), where they named JayOS's build arm; apply's says
+#     it in four lines where it said two.
+#   - `build` is gone: building is the package's, and the verb the popup's
+#     button runs stays in JayOS's wrapper. `strengths` is new
+#     (strength_names, read from strength_params' own arms). An unknown verb
+#     gets usage(), four lines under the name this was started by ($ME),
+#     where it got one line naming denoise.sh's verbs.
+#   - Every message that began "denoise.sh:" begins "jayos-denoise:".
+#   - The library is sourced from this file's own directory, not the one
+#     above it, and one that will not load is refused with exit 1 where the
+#     original ran on without it.
+#   - apply's "did not load" and "did not reload" are on stdout, with
+#     load_preset's "socat is not installed" folded in; they were on stderr
+#     (the head of the apply arm says why).
+#
+# The rest is the same code with the same reasons. Nothing holds this list
+# to the code: it was made on 2026-10-04 from a diff of the two files with
+# comment lines and trailing comments stripped.
+
+set -uo pipefail
+
+# Resolved, so the /usr/bin symlink the package installs finds the library
+# beside the real file in /usr/lib/jayos-denoise -- and a checkout finds it
+# beside this one in src/.
+HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+# Refused without it, before any verb runs. With no `set -e` a failed source
+# went on: every ee_ function was "command not found", and status exited 0
+# with installed:false -- EasyEffects called missing, with confidence, on a
+# machine that has it, which jayos's wrapper passes on as this engine's
+# answer. A package missing a file is the package's to report
+# (tests/shell/test-engine.sh, "without its library").
+# shellcheck source=easyeffects-lib.sh
+source "$HERE/easyeffects-lib.sh" || {
+    echo "jayos-denoise: could not load $HERE/easyeffects-lib.sh; pacman -Qkk jayos-denoise lists the package's files that are missing" >&2
+    exit 1
+}
+
+PRESET_NAME="denoise"
+ME="$(basename "$0")"
+
+die() { echo "jayos-denoise: $*" >&2; exit 1; }
+
+# The strengths, and every number behind them.
+#
+# The knobs are DeepFilterNet's own control ports, in the units EasyEffects
+# passes through unchanged (its DeepFilterNet.qml, kcfg and the LADSPA
+# descriptor agree on the ranges):
+#
+#   attenuation-limit (dB, 0-100)   how much of the noise estimate to remove.
+#                                   100 is NO limit -- upstream's own default,
+#                                   and its reading of "remove everything the
+#                                   model calls noise". Upstream suggests 6-12
+#                                   for a little reduction and 18-24 for a
+#                                   medium one; EasyEffects' manual calls
+#                                   70-80 the balanced range.
+#   min-processing-threshold (dB)   frames whose local SNR estimate is below
+#                                   this get a zero mask instead of the
+#                                   model's gains (apply_stages in
+#                                   libDF/src/tract.rs, a strict `<`) -- and
+#                                   the attenuation limit then mixes the noisy
+#                                   frame back in at the limit, so a gated
+#                                   frame is 24 dB down on gentle, 70 on
+#                                   balanced, and silent only on maximum,
+#                                   which has no limit. A gate that blunt
+#                                   clips soft onsets, so this is kept out of
+#                                   the way: -15, the floor EasyEffects
+#                                   allows, is also the bottom of the model's
+#                                   own estimate, 50*sigmoid - 15
+#                                   (DeepFilterNet/df/deepfilternet3.py's
+#                                   lsnr_fc; lsnr_min/lsnr_max in the model's
+#                                   config.ini), so the gate is off in effect
+#                                   -- a float rounding below -15 is all that
+#                                   could trip it -- and the gains do all the
+#                                   work. libDF's own default, -10, is where
+#                                   it does fire. READ from the pinned
+#                                   commit's source; the audit walked the
+#                                   shipped models' graphs (Add -15, Mul 50,
+#                                   Sigmoid). Not listened to: nothing here
+#                                   can.
+#   max-erb-processing-threshold    above this local SNR the frame is passed
+#                                   as already clean, with no processing;
+#   max-df-processing-threshold     between this and the ERB threshold only
+#                                   the gain stage runs and the deep-filter
+#                                   stage is skipped. 30 and 20 are the
+#                                   defaults; 35 is the ceiling, at which every
+#                                   frame goes through both stages. libDF warns
+#                                   unless min <= max-DF <= max-ERB, which
+#                                   every row below satisfies.
+#   min-processing-buffer (frames)  extra frames queued before processing.
+#                                   Each is 10 ms of latency; 0 everywhere.
+#   post-filter-beta (0-0.05)       a post-filter that sharpens attenuation
+#                                   when it is above 0. 0.02 is EasyEffects'
+#                                   default; 0.05 the ceiling.
+#
+# Informed defaults, not measured ones: nothing here can listen. The three
+# are meant to be told apart in a recording, and JayOS's popup cycles them.
+strength_params() { # strength_params <name>  -> ATTEN MIN_T MAX_ERB MAX_DF BUFFER BETA
+    case "$1" in
+        gentle)   ATTEN=24.0;  MIN_T=-15.0; MAX_ERB=30.0; MAX_DF=20.0; BUFFER=0; BETA=0.02 ;;
+        balanced) ATTEN=70.0;  MIN_T=-15.0; MAX_ERB=30.0; MAX_DF=20.0; BUFFER=0; BETA=0.02 ;;
+        maximum)  ATTEN=100.0; MIN_T=-15.0; MAX_ERB=35.0; MAX_DF=35.0; BUFFER=0; BETA=0.05 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The names strength_params knows, in its order, read from its own case arms
+# rather than written out a second time: a list kept beside the table would be
+# a second list to keep equal to it. Comment lines are skipped, and the arms
+# are the lines that open with a bare name and a `)`.
+strength_names() {
+    sed -n '/^strength_params() {/,/^}/p' "$(realpath "${BASH_SOURCE[0]}")" \
+        | grep -vE '^[[:space:]]*#' \
+        | sed -n -E 's/^[[:space:]]+([a-z]+)\)[[:space:]].*/\1/p'
+}
+
+# The strength a caller gave, or balanced when it gave none. A name this
+# does not know is the caller's to refuse or replace (set and apply differ).
+DEFAULT_STRENGTH="balanced"
+
+# The preset, in the shape src/deepfilternet_preset.cpp writes and reads.
+#
+# `deepfilternet#0`: 8.x names plugin instances with an index, and a bare
+# `deepfilternet` from an old preset is upgraded to #0 on load. The key
+# names are the 7.x GSettings names, which 8.x kept in its JSON. Gains stay
+# at 0 -- level belongs to the mixer, not to a noise filter.
+preset_json() { # preset_json <strength> <bypass true|false>
+    strength_params "$1" || return 1
+    cat <<EOF
+{
+    "input": {
+        "blocklist": [],
+        "plugins_order": [
+            "deepfilternet#0"
+        ],
+        "deepfilternet#0": {
+            "bypass": $2,
+            "input-gain": 0.0,
+            "output-gain": 0.0,
+            "attenuation-limit": $ATTEN,
+            "min-processing-threshold": $MIN_T,
+            "max-erb-processing-threshold": $MAX_ERB,
+            "max-df-processing-threshold": $MAX_DF,
+            "min-processing-buffer": $BUFFER,
+            "post-filter-beta": $BETA
+        }
+    }
+}
+EOF
+}
+
+preset_dir()  { printf '%s/input' "$(ee_presets_root)"; }
+preset_file() { printf '%s/%s.json' "$(preset_dir)" "$PRESET_NAME"; }
+
+# Written beside its final name and moved into place, so EasyEffects' own
+# directory watcher never sees a half-written file, and validated before the
+# move: a preset that does not parse is one EasyEffects lists and refuses
+# without a word.
+write_preset() { # write_preset <strength> <bypass>
+    local dir tmp
+    dir=$(preset_dir)
+    mkdir -p "$dir" || die "cannot create $dir"
+    tmp=$(mktemp "$dir/.$PRESET_NAME.json.XXXXXX") || die "cannot write in $dir"
+    if ! preset_json "$1" "$2" > "$tmp"; then
+        rm -f "$tmp"
+        die "unknown strength '$1' (gentle, balanced or maximum)"
+    fi
+    if ! jq -e . "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        die "produced a preset that does not parse; nothing written"
+    fi
+    mv -f "$tmp" "$(preset_file)"
+}
+
+# A load written to the running instance's socket, then a question: what
+# does it hold?
+#
+# That the line reached a listening daemon is not that the daemon loaded
+# anything -- it takes a load of a preset it does not have without a word --
+# so the load is believed only when the daemon answers that ours is what it
+# holds. Three tries a second apart, because a daemon that has just opened
+# its socket may not be answering yet, and the lib bounds each exchange.
+# Written through the socket rather than with `easyeffects -l`, which also
+# closed the application's window every time (see the lib's header).
+load_preset() {
+    local i heard
+    if ! ee_have_client; then
+        echo "jayos-denoise: socat is not installed, so nothing can reach easyeffects' socket" >&2
+        return 1
+    fi
+    for i in 1 2 3; do
+        ee_load_preset input "$PRESET_NAME"
+        if heard=$(ee_ask_preset input) && [[ "$heard" == "$PRESET_NAME" ]]; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# Where the plugin was looked for, for the lines that say it was not found:
+# the same list ee_plugin_path searches, LADSPA_PATH when it is set.
+plugin_not_found() { # plugin_not_found <first line>
+    echo "jayos-denoise: $1" >&2
+    if [[ -n "${LADSPA_PATH:-}" ]]; then
+        echo "            $EE_PLUGIN_SO is in no directory of LADSPA_PATH=$LADSPA_PATH," >&2
+        echo "            which EasyEffects searches instead of its own list when it is set" >&2
+    else
+        echo "            $EE_PLUGIN_SO is in none of /usr/local/lib/ladspa, /usr/lib/ladspa" >&2
+        echo "            and /usr/lib64/ladspa, where EasyEffects looks" >&2
+    fi
+    echo "            pacman -Qkk jayos-denoise lists the package's files that are missing" >&2
+}
+
+usage() {
+    echo "usage: $ME status|preset|set|apply|strengths" >&2
+    echo "       $ME preset <gentle|balanced|maximum> [off]" >&2
+    echo "       $ME set on|off [gentle|balanced|maximum]" >&2
+    echo "       $ME apply on|off [gentle|balanced|maximum] [--force]" >&2
+    exit 1
+}
+
+case "${1:-status}" in
+    status)
+        installed=false running=false plugin=false plugin_path="" layout=0
+        root="" file="" exists=false current="" loaded=false
+        if ee_installed; then
+            installed=true
+            ee_running && running=true
+            plugin_path=$(ee_plugin_path) && plugin=true || plugin_path=""
+            layout=$(ee_layout)
+            root=$(ee_presets_root)
+            file=$(preset_file)
+            [[ -f "$file" ]] && exists=true
+            current=$(ee_current_preset input)
+            # Ours is the input pipeline's preset of record: the daemon's
+            # answer, or with nothing running the rc's. Not "filtering now"
+            # -- a stopped instance and the global bypass filter nothing
+            # whatever this says, which is why a caller asks about both
+            # before it reads `loaded`.
+            [[ "$exists" == true && "$current" == "$PRESET_NAME" ]] && loaded=true
+        fi
+        # Built by jq, every string through --arg: the input preset is the
+        # daemon's answer and may be any name at all, and a sed that escaped
+        # `\` and `"` alone let a tab through raw -- JSON a reader could not
+        # parse. jq is already this script's: write_preset validates with it.
+        jq -nc \
+            --argjson installed "$installed" --argjson running "$running" \
+            --argjson plugin "$plugin" --arg pluginPath "$plugin_path" \
+            --argjson layout "$layout" --arg presetsRoot "$root" \
+            --arg presetFile "$file" --argjson presetExists "$exists" \
+            --arg inputPreset "$current" --argjson loaded "$loaded" \
+            '{installed: $installed, running: $running, plugin: $plugin,
+              pluginPath: $pluginPath, layout: $layout, presetsRoot: $presetsRoot,
+              presetFile: $presetFile, presetExists: $presetExists,
+              inputPreset: $inputPreset, loaded: $loaded}'
+        ;;
+
+    preset)
+        [[ -n "${2:-}" ]] || die "usage: $ME preset <gentle|balanced|maximum> [off]"
+        bypass=false
+        [[ "${3:-}" == "off" ]] && bypass=true
+        preset_json "$2" "$bypass" || die "unknown strength '$2' (gentle, balanced or maximum)"
+        ;;
+
+    strengths)
+        names=$(strength_names)
+        [[ -n "$names" ]] || die "could not read the strengths out of $HERE"
+        printf '%s\n' "$names"
+        ;;
+
+    set)
+        ee_installed || die "easyeffects is not installed"
+        case "${2:-}" in
+            on|off) ;;
+            *) die "usage: $ME set on|off [gentle|balanced|maximum]" ;;
+        esac
+        strength="${3:-$DEFAULT_STRENGTH}"
+        # Refused for on, which loads the preset it writes. Not for off: there
+        # the strength only fills in the numbers of a preset that is
+        # bypassed, and off has to be reachable whatever it is handed. An
+        # off that died here over a hand-edited "strong" left the filter
+        # loaded and not bypassed while every switch drawn over it said off.
+        # The default stands in.
+        if ! strength_params "$strength" >/dev/null 2>&1; then
+            [[ "$2" == on ]] && die "unknown strength '$strength' (gentle, balanced or maximum)"
+            strength=$DEFAULT_STRENGTH
+        fi
+
+        if [[ "$2" == on ]]; then
+            if ! ee_plugin_path >/dev/null; then
+                plugin_not_found "the DeepFilterNet plugin is not where EasyEffects looks, so there is nothing to turn on"
+                exit 1
+            fi
+            # Before anything is written or started, as the plugin is: the
+            # load goes over the socket, and load_preset finding socat
+            # missing only after ee_ensure_running had started an instance
+            # meant a toggle that started EasyEffects in order to fail.
+            ee_have_client \
+                || die "socat is not installed, so nothing can reach easyeffects' socket; nothing was written or started"
+            write_preset "$strength" false
+            ee_ensure_running || die "easyeffects did not start; the preset is written and will load next time"
+            current=$(ee_current_preset input)
+            if [[ -n "$current" && "$current" != "$PRESET_NAME" ]]; then
+                echo "replacing input preset '$current' with $PRESET_NAME"
+            fi
+            load_preset || die "easyeffects did not load the preset"
+            echo "noise suppression on ($strength)"
+        else
+            # Off with no plugin, or with no preset of ours, is nothing to do:
+            # there is no filter to idle.
+            if [[ ! -f "$(preset_file)" ]]; then
+                echo "noise suppression off (nothing was loaded)"
+                exit 0
+            fi
+            write_preset "$strength" true
+            # Loaded again only when it is ours that is loaded. Off must never
+            # replace a preset somebody chose. With no instance there is no
+            # filter to idle, but the file is not enough: an instance restores
+            # its pipeline from its own database, which still says "ours, not
+            # bypassed", so `apply off` makes the next one agree -- and
+            # whatever starts EasyEffects is what has to call it. JayOS calls
+            # it at login, and when the popup's Start, Next preset or Open
+            # starts one (easyeffects.sh) or the equaliser does
+            # (music/equalizer.sh), through ee_apply_noise_setting in its
+            # easyeffects-lib.sh. Not yet when something else starts it --
+            # the application launcher, `systemctl --user restart`, the
+            # unit's own Restart=on-failure -- which waits for the next
+            # login (docs/DEEPFILTERNET.md, "A preset you chose wins at
+            # login").
+            #
+            # A process that is still starting is waited for, and for as long
+            # as apply waits: a start can take four seconds through the unit
+            # plus fifteen by hand (easyeffects-lib.sh), and ten gave up on
+            # one that took fifteen, printed "off", and left the filter
+            # running.
+            if ee_running && ee_wait_running 20 \
+               && [[ "$(ee_current_preset input)" == "$PRESET_NAME" ]]; then
+                load_preset || die "easyeffects did not reload the preset"
+            fi
+            echo "noise suppression off"
+        fi
+        ;;
+
+    apply)
+        # EVERY REPORT APPLY EXITS 0 AFTER IS ON STDOUT. It exits 0 whatever
+        # happened -- it runs at login, with nobody to read a refusal -- so
+        # the status tells a caller nothing and the lines are the whole
+        # report. Split over two streams, a caller that keeps one of them
+        # (a $(...), a `>log 2>/dev/null`) heard half, and the half on
+        # stderr was the two failures, "did not load" and "did not reload":
+        # the lines most worth reading. stderr is left to what exits 1 here,
+        # a usage error or a preset that cannot be written, which is the
+        # caller's fault or the package's rather than an outcome of the
+        # login. load_preset's own "socat is not installed" is folded in
+        # with 2>&1 for the same reason (tests/shell/test-engine.sh, "apply
+        # on, stdout alone").
+        case "${2:-}" in
+            on|off) wanted=$2 ;;
+            *) die "usage: $ME apply on|off [gentle|balanced|maximum] [--force]" ;;
+        esac
+        # The strength and --force in either order after the state, so a
+        # caller that has no strength to give can still force.
+        strength="" force=0
+        for a in "${@:3}"; do
+            case "$a" in
+                --force) force=1 ;;
+                *) [[ -z "$strength" ]] && strength=$a ;;
+            esac
+        done
+        # Quiet on a machine without EasyEffects: this runs at every login.
+        ee_installed || exit 0
+        # A name this does not know is replaced, not refused, for both
+        # states: apply runs at login with no one to read a refusal, and the
+        # on path validates the preset it writes either way.
+        strength_params "${strength:-x}" >/dev/null 2>&1 || strength=$DEFAULT_STRENGTH
+
+        if [[ "$wanted" != on ]]; then
+            # Off: keep our file bypassed if it exists, and make the instance
+            # agree only if ours is what it holds.
+            #
+            # The instance is usually still starting when this runs, and it
+            # restores its pipeline from its own database, not from our file
+            # -- so a `set off` that found nothing running left the database
+            # saying "ours, not bypassed", and the next start would bring the
+            # filter back on. When a process exists, or the rc says ours is
+            # what the coming one will restore, this waits for the socket the
+            # way the on path does and reloads ours if ours is what it holds;
+            # with neither, it exits at once.
+            [[ -f "$(preset_file)" ]] || exit 0
+            write_preset "$strength" true
+            if ee_running || [[ "$(ee_rc_get Presets lastLoadedInputPreset)" == "$PRESET_NAME" ]]; then
+                if ee_wait_running 20 && [[ "$(ee_current_preset input)" == "$PRESET_NAME" ]]; then
+                    load_preset 2>&1 || echo "jayos-denoise: easyeffects did not reload the preset"
+                fi
+            fi
+            exit 0
+        fi
+
+        if ! ee_plugin_path >/dev/null; then
+            # On stdout, as every report apply exits 0 after is (above).
+            plugin_not_found "noise suppression is wanted on but the DeepFilterNet plugin is not where EasyEffects looks" 2>&1
+            exit 0
+        fi
+        write_preset "$strength" false
+        # The instance is whoever started it's to start. Waiting rather than
+        # starting: two starts race for the lock file, and the loser hands its
+        # arguments to the winner and exits -- harmless, and a race for
+        # nothing. The wait is for a socket something listens on, which a
+        # starting instance opens last; a load sent before it reaches nobody.
+        if ! ee_wait_running 20; then
+            echo "jayos-denoise: easyeffects is not running; the preset is written and not loaded"
+            exit 0
+        fi
+        current=$(ee_current_preset input)
+        if [[ -n "$current" && "$current" != "$PRESET_NAME" && $force -eq 0 ]]; then
+            echo "jayos-denoise: input preset '$current' is loaded; leaving it (set on, or --force, replaces it)"
+            exit 0
+        fi
+        if load_preset 2>&1; then
+            echo "jayos-denoise: loaded $PRESET_NAME ($strength)"
+        else
+            echo "jayos-denoise: easyeffects did not load $PRESET_NAME"
+        fi
+        exit 0
+        ;;
+
+    *)
+        usage
+        ;;
+esac

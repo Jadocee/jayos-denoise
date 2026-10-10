@@ -1,0 +1,104 @@
+# Maintainer: Jadocee
+#
+# jayos-denoise, built from the checkout this file sits in.
+#
+#   cd packaging/arch && makepkg -si
+#
+# THIS IS THE RECIPE FOR A CHECKOUT, NOT FOR A RELEASE
+#
+# The engine, its library, the contract and the documents come from the
+# working tree two directories up, whatever it holds -- committed or not, so
+# somebody changing the engine builds and installs the change without pushing
+# it first. The plugin comes from the one source=() line, at the commit
+# below. JayOS carries its own recipe for the other case, an install that
+# fetches this repository's main branch from GitHub (jayos:
+# pkgbuilds/jayos-denoise/PKGBUILD).
+#
+# Both recipes do nothing but name their sources and call packaging/steps.sh,
+# which holds every build flag, every proof and the file list once. Its header
+# says why.
+#
+# THE PIN
+#
+# _commit is the plugin's pin for both recipes, and it has to stay a literal
+# on one line: this file's source=() needs it at parse time, and steps.sh
+# reads it as text -- never sourcing this file -- for JayOS's recipe, which
+# clones the fork with no fragment and checks this commit out. It is the
+# DeepFilterNet Plus fork's v1.0.2 tag, peeled: v1.0.2 is an annotated tag, so
+# the bare name answers with the tag object's own id, which is not this commit
+# and reads as a wrong pin. Quoted, because zsh with extendedglob reads ^ as a
+# glob operator:
+#
+#   git ls-remote https://github.com/ismailivanov/DeepFilterNetPlus 'v1.0.2^{}'
+#
+# pkgver is VERSION, written out. tests/shell/test-packaging.sh holds the two
+# to each other. A pkgver() function would make makepkg rewrite this file on
+# every build, and a recipe that edits itself in a checkout is a recipe whose
+# diff nobody can read.
+
+pkgname=jayos-denoise
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Microphone noise suppression for EasyEffects: DeepFilterNet 3 with the full model, and the command that switches it"
+arch=('x86_64')
+url="https://github.com/Jadocee/jayos-denoise"
+# This repository's code is MIT; the plugin is the fork's, dual-licensed at
+# the user's option, which SPDX spells with OR. Both texts are installed.
+license=('MIT' 'MIT OR Apache-2.0')
+# glibc and gcc-libs for the plugin, whose NEEDED list is libc, libm,
+# libgcc_s and the loader (steps.sh proves it on every build). The rest for
+# the engine, a package for every command it or its library runs: bash,
+# through env in its #! line; socat, the client for EasyEffects' socket; jq,
+# which writes and validates every JSON it emits; procps-ng for pgrep,
+# util-linux for setsid, gawk for the rc reader; and coreutils, sed and
+# grep. Every package here but jq and socat comes with Arch's base, and each
+# is listed anyway: this is every package the engine needs, not the ones a
+# system might lack. tests/shell/test-packaging.sh reads the commands out of
+# the code and holds this list to them both ways -- a command no package
+# here installs fails it, and so does a package here that nothing runs.
+depends=('glibc' 'gcc-libs' 'bash' 'jq' 'socat' 'procps-ng' 'util-linux' 'gawk' 'coreutils' 'sed' 'grep')
+# cargo is provided by the rustup package as well as by rust, so either
+# toolchain satisfies makepkg; git is for the source line and the checkout.
+makedepends=('cargo' 'git')
+optdepends=('easyeffects: the host that loads the plugin, and what jayos-denoise switches')
+# Every packaging of the plugin provides and conflicts on this name -- the AUR's
+# three, and the deepfilternet-ladspa recipe JayOS carried before this
+# package -- so this one cannot be installed beside any of them, which is
+# right, since they would all put the same file in /usr/lib/ladspa.
+provides=('libdeep_filter_ladspa')
+conflicts=('libdeep_filter_ladspa')
+# !lto: makepkg's lto option only adds -flto=auto to the C flags, which here
+# reach nothing but the jemalloc that jemalloc-sys compiles, while the Rust
+# side already has the profile's thin LTO. !debug: it would put
+# -C debuginfo=2 into RUSTFLAGS for 145 crates at opt-level 3, for a -debug
+# split package nothing would load into a debugger.
+options=('!lto' '!debug')
+_commit=d97178d739dffc9f862315cad83f79d40580dc3d
+source=("DeepFilterNetPlus::git+https://github.com/ismailivanov/DeepFilterNetPlus.git#commit=$_commit")
+# SKIP is the convention for a commit-pinned git source, not a hole in it:
+# makepkg can checksum a file and cannot checksum a clone, and the object id
+# above is the pin -- git verifies every object it checks out against it.
+sha256sums=('SKIP')
+
+# The checkout: two levels above this file. makepkg sets startdir to its
+# physical working directory already; realpath is for a caller that sets it
+# another way, as tests/shell/test-packaging.sh does.
+_tree() { realpath "$startdir/../.."; }
+_steps() { bash "$(_tree)/packaging/steps.sh" "$@"; }
+
+prepare() {
+    _steps checkout "$srcdir/DeepFilterNetPlus"
+    _steps fetch "$srcdir/DeepFilterNetPlus"
+}
+
+build() {
+    _steps build "$srcdir/DeepFilterNetPlus"
+}
+
+check() {
+    _steps check "$srcdir/DeepFilterNetPlus"
+}
+
+package() {
+    _steps package "$srcdir/DeepFilterNetPlus" "$pkgdir"
+}
