@@ -1,0 +1,330 @@
+From 57a53b03de9526da598f816b253434bafb928ce9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 04:06:56 +0000
+Subject: [PATCH] ladspa: hold headroom above what the host's quantum needs
+
+run() never waits for the worker. When the samples a quantum needs are
+not processed yet, it writes that quantum as silence and grows the delay
+by it; ten seconds after the delay last changed, if a frame of it went
+unused, it trims a frame off, skipping 10 ms of audio. The delay starts at
+one frame, so it is reached through those silences, and it stops at the
+first value that served the quantum that failed: at PipeWire's default
+quantum of 1024, 1504 samples against the 1472 the quantum needs, which
+leaves 0.7 ms for the worker -- an ordinary thread, running 3 to 4 ms of
+inference per frame -- to be late by. Every frame later than that was
+another quantum of silence, and every trim put the delay back where the
+next one landed: a microphone that cuts in and out. 'Min Processing
+Buffer (frames)' was only a floor under the trim, counted from nothing,
+so at a quantum of 1024 a floor of two frames changed nothing.
+
+Now the delay is set up before the first output: what the quantum needs
+-- required_delay(), the quantum and the largest remainder short of a
+frame the input queue reaches while the quantum and the hop go in and out
+of step -- and 'Min Processing Buffer (frames)' frames of headroom above
+it, for the worker to be late by. Again when a quantum needs more than is
+queued, an underrun that is certain rather than a late worker, and when
+the headroom is raised. The trim never takes the delay below that, nor
+below one more frame for each overload episode, up to eight, each given
+back after five minutes without an underrun: a stall the headroom did not
+cover is one the machine has, and trimming its frame straight back only
+waited for the next.
+
+The tests hold required_delay() to a simulation of the two queues: for
+fourteen quanta and six starting remainders, the delay serves every cycle
+and one sample less does not.
+
+Measured with a C host calling run() once per quantum from a SCHED_FIFO
+thread, a quantum's worth of time apart, over assets/noisy_snr0.wav, in a
+four-vCPU virtual machine: across six two-minute runs, idle and loaded, at
+quanta of 256, 480 and 1024, this left 6 gaps and no trim where the
+unpatched plugin with no headroom had 15 gaps and 11 trims. The gaps left
+were stalls of the machine's longer than the 20 ms of headroom.
+---
+ ladspa/src/lib.rs | 172 ++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 168 insertions(+), 4 deletions(-)
+
+diff --git a/ladspa/src/lib.rs b/ladspa/src/lib.rs
+index b569825..d52e89e 100644
+--- a/ladspa/src/lib.rs
++++ b/ladspa/src/lib.rs
+@@ -66,6 +66,15 @@ const MIN_PROC_BUF_MAX: f32 = 10.;
+ const OVERLOAD_RESETS_TO_BYPASS: u32 = 3;
+ const OVERLOAD_BYPASS_SECS: usize = 5;
+ 
++// What an overload episode teaches: one more frame the delay is never trimmed
++// below, up to this many, each given back after this long without an
++// underrun. A stall the headroom did not cover is one the machine has, and
++// trimming the frame it cost straight back -- ten seconds later, as the delay
++// is otherwise trimmed -- only waited for the next one: a gap and a skip every
++// few tens of seconds, which is what a microphone cutting in and out is.
++const LEARNED_FRAMES_MAX: usize = 8;
++const LEARNED_FRAME_SECS: usize = 300;
++
+ struct DfPlugin {
+     i_tx: SampleQueue,
+     o_rx: SampleQueue,
+@@ -77,6 +86,11 @@ struct DfPlugin {
+     proc_delay: usize,
+     t_proc_change: usize,
+     min_q_level: usize, // Lowest output queue level since the last latency change
++    q_win: [usize; 2],  // Largest quantum in the previous ten seconds and in these
++    t_q_win: usize,     // Samples into these ten seconds
++    primed: Option<usize>, // Headroom the delay was last set up with; None before run()
++    learned: usize,     // Frames of floor added by overload episodes (LEARNED_FRAMES_MAX)
++    t_learned: usize,   // Samples since an underrun added one, or one was given back
+     worker_dead: bool,
+     in_overload: bool,      // Inside an overload episode (episode = until 1s clean)
+     ep_underruns: u32,      // Underruns in the current episode
+@@ -93,6 +107,27 @@ struct DfPlugin {
+ const ID_MONO: u64 = 7843795;
+ const ID_STEREO: u64 = 7843796;
+ 
++fn gcd(a: usize, b: usize) -> usize {
++    if b == 0 { a } else { gcd(b, a % b) }
++}
++
++/// The fewest samples that must be queued for every run() of `quantum`
++/// samples to find its output ready, if the worker took no time at all.
++///
++/// The worker can only start on a frame once run() has pushed the input that
++/// completes it, and that run() drains its output before the worker can have
++/// answered, so each run() is served from frames completed by earlier ones.
++/// Between frames the input queue holds a remainder below one frame, and with
++/// a quantum that is not a multiple of the hop the remainder walks through
++/// every value `in_queue % g` apart, g being their gcd: the delay has to cover
++/// the quantum and the largest of those. At PipeWire's default quantum of 1024
++/// against the 480-sample hop that is 1472, where the plugin used to settle at
++/// 1504 -- 32 samples, 0.7 ms, for the worker to be late by.
++fn required_delay(quantum: usize, frame: usize, in_queue: usize) -> usize {
++    let g = gcd(quantum, frame);
++    quantum + frame - g + in_queue % g
++}
++
+ fn log_format(buf: &mut env_logger::fmt::Formatter, record: &log::Record) -> io::Result<()> {
+     let ts = buf.timestamp_millis();
+     let module = if let Some(m) = record.module_path() {
+@@ -280,6 +315,11 @@ fn get_new_df(channels: usize) -> impl Fn(&PluginDescriptor, u64) -> DfPlugin {
+             proc_delay,
+             t_proc_change: 0,
+             min_q_level: usize::MAX,
++            q_win: [0, 0],
++            t_q_win: 0,
++            primed: None,
++            learned: 0,
++            t_learned: 0,
+             worker_dead: false,
+             in_overload: false,
+             ep_underruns: 0,
+@@ -373,6 +413,16 @@ impl DfControlHistory {
+     }
+ }
+ 
++impl DfPlugin {
++    /// What the largest quantum of the last ten to twenty seconds needs:
++    /// exact while it is this one, and otherwise the bound that holds whatever
++    /// the input queue's remainder is.
++    fn recent_need(&self, sample_count: usize, need: usize) -> usize {
++        let q_hi = self.q_win[0].max(self.q_win[1]);
++        if q_hi <= sample_count { need } else { q_hi + self.frame_size - 1 }
++    }
++}
++
+ impl Plugin for DfPlugin {
+     fn activate(&mut self) {
+         log::info!("DF {} | activate", self.id);
+@@ -474,6 +524,7 @@ impl Plugin for DfPlugin {
+                 self.proc_delay = self.frame_size;
+                 self.t_proc_change = 0;
+                 self.min_q_level = usize::MAX;
++                self.primed = None;
+                 log::info!("DF {} | Overload cooldown over, resuming processing", self.id);
+             }
+             return;
+@@ -497,12 +548,31 @@ impl Plugin for DfPlugin {
+             }
+         }
+ 
+-        {
++        let in_queue = {
+             let i_q = &mut self.i_tx.lock().unwrap();
++            let before = i_q[0].len();
+             for (i_ch, i_q_ch) in inputs.iter().zip(i_q.iter_mut()) {
+                 i_q_ch.extend(i_ch.iter().map(|&s| finite_or_zero(s)));
+             }
+-        }
++            before
++        };
++
++        // The delay this quantum needs, and the headroom above it that the
++        // worker may be late by: 'Min Processing Buffer (frames)', in frames.
++        // Set up before the first output instead of reached through
++        // underruns, each of which is a quantum of silence and grows the
++        // delay only as far as the quantum it failed, so the delay settled
++        // with no margin at all and every slow frame after that was another
++        // gap. Again whenever a quantum needs more than is queued -- an
++        // underrun that is certain, not a late worker -- and when the
++        // headroom is raised, with whatever underruns have taught on top.
++        let headroom = self.frame_size * self.control_hist.min_buffer_frames as usize;
++        let need = required_delay(sample_count, self.frame_size, in_queue);
++        let prime = sample_count > 0
++            && match self.primed {
++                None => true,
++                Some(h) => self.proc_delay < need || headroom > h,
++            };
+ 
+         // Never block the real-time thread waiting for the worker (issue #661):
+         // with small host quanta (e.g. PipeWire's min-quantum of 32) the deadline
+@@ -511,6 +581,22 @@ impl Plugin for DfPlugin {
+         // and grow the processing latency by the missing amount.
+         let underrun = {
+             let o_q = &mut self.o_rx.lock().unwrap();
++            // Logged below, once the worker can have the queue again.
++            if prime {
++                let add = (need + headroom + self.frame_size * self.learned)
++                    .saturating_sub(self.proc_delay);
++                if add > 0 {
++                    for o_q_ch in o_q.iter_mut() {
++                        for _ in 0..add {
++                            o_q_ch.push_front(0f32);
++                        }
++                    }
++                    self.proc_delay += add;
++                    self.t_proc_change = 0;
++                    self.min_q_level = usize::MAX;
++                }
++                self.primed = Some(headroom);
++            }
+             if o_q[0].len() >= sample_count {
+                 for (o_q_ch, o_ch) in o_q.iter_mut().zip(outputs.iter_mut()) {
+                     for (o, s) in o_ch.iter_mut().zip(o_q_ch.drain(..sample_count)) {
+@@ -529,6 +615,16 @@ impl Plugin for DfPlugin {
+             }
+         };
+ 
++        if prime {
++            log::info!(
++                "DF {} | Holding {:.1}ms for a quantum of {}, {:.1}ms of it headroom",
++                self.id,
++                self.proc_delay as f32 * 1000. / self.sr as f32,
++                sample_count,
++                (headroom + self.frame_size * self.learned) as f32 * 1000. / self.sr as f32
++            );
++        }
++
+         if underrun {
+             // Logging is bounded per overload episode instead of per step: the
+             // old per-underrun warnings produced ~48 journal lines per second
+@@ -539,6 +635,7 @@ impl Plugin for DfPlugin {
+                 self.ep_underruns = 0;
+                 self.ep_resets = 0;
+                 self.ep_samples = 0;
++                self.learned = (self.learned + 1).min(LEARNED_FRAMES_MAX);
+                 log::warn!(
+                     "DF {} | Output underrun, increasing processing latency (one log per overload episode)",
+                     self.id
+@@ -546,6 +643,7 @@ impl Plugin for DfPlugin {
+             }
+             self.ep_underruns += 1;
+             self.t_clean = 0;
++            self.t_learned = 0;
+             if self.proc_delay >= self.sr {
+                 // Sustained overload: no buffer size can fix this. Drop the
+                 // stale backlog and restart from the initial latency.
+@@ -583,6 +681,7 @@ impl Plugin for DfPlugin {
+                         o_ch.extend(std::iter::repeat(0f32).take(self.frame_size));
+                     }
+                     self.proc_delay = self.frame_size;
++                    self.primed = None;
+                 }
+             } else {
+                 // The silence emitted above already delays the queued samples by
+@@ -612,11 +711,13 @@ impl Plugin for DfPlugin {
+             );
+         } else if self.t_proc_change > 10 * self.sr
+             && self.proc_delay
+-                >= self.frame_size * (1 + self.control_hist.min_buffer_frames as usize)
++                >= self.frame_size * (1 + self.learned) + headroom + self.recent_need(sample_count, need)
+             && self.min_q_level >= self.frame_size
+         {
+             // No underrun for 10s and even the worst-case queue level kept a
+-            // full spare frame: that margin is unused, trim it.
++            // full spare frame: that margin is unused, trim it -- but never
++            // into the headroom, or into what underruns have taught, which is
++            // what that worst case was measured with.
+             {
+                 let o_q = &mut self.o_rx.lock().unwrap();
+                 for o_q_ch in o_q.iter_mut() {
+@@ -636,6 +737,17 @@ impl Plugin for DfPlugin {
+         }
+         // Counts samples since the last latency change, independent of quantum size
+         self.t_proc_change += sample_count;
++        self.t_learned += sample_count;
++        if self.learned > 0 && self.t_learned >= LEARNED_FRAME_SECS * self.sr {
++            self.learned -= 1;
++            self.t_learned = 0;
++        }
++        self.q_win[1] = self.q_win[1].max(sample_count);
++        self.t_q_win += sample_count;
++        if self.t_q_win >= 10 * self.sr {
++            self.q_win = [self.q_win[1], 0];
++            self.t_q_win = 0;
++        }
+         if !underrun {
+             self.t_clean += sample_count;
+         }
+@@ -886,3 +998,55 @@ pub fn get_ladspa_descriptor(index: u64) -> Option<PluginDescriptor> {
+     };
+     Some(descriptor)
+ }
++
++#[cfg(test)]
++mod delay_tests {
++    use super::required_delay;
++
++    const HOP: usize = 480;
++
++    /// Whether `delay` samples, `in_queue` of them input short of a frame,
++    /// serve every run() of `quantum` samples for a whole cycle of the
++    /// remainder, with a worker that answers between one run() and the next
++    /// and takes no time doing it -- the best case required_delay() is for.
++    fn serves(quantum: usize, in_queue: usize, delay: usize) -> bool {
++        let (mut in_q, mut out_q) = (in_queue, delay - in_queue);
++        for _ in 0..2 * HOP {
++            in_q += quantum;
++            if out_q < quantum {
++                return false;
++            }
++            out_q -= quantum;
++            out_q += in_q / HOP * HOP;
++            in_q %= HOP;
++        }
++        true
++    }
++
++    #[test]
++    fn the_delay_serves_every_quantum_and_one_sample_less_does_not() {
++        let quanta = [32, 64, 128, 256, 441, 480, 512, 960, 1024, 1114, 1115, 2048, 4096, 8192];
++        for quantum in quanta {
++            for in_queue in [0, 1, 31, 32, 255, 479] {
++                let need = required_delay(quantum, HOP, in_queue);
++                assert!(
++                    serves(quantum, in_queue, need),
++                    "{need} does not serve a quantum of {quantum} from a remainder of {in_queue}"
++                );
++                assert!(
++                    !serves(quantum, in_queue, need - 1),
++                    "{} serves a quantum of {quantum} from a remainder of {in_queue}",
++                    need - 1
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn at_the_quanta_pipewire_hosts_run() {
++        assert_eq!(required_delay(1024, HOP, 0), 1472);
++        assert_eq!(required_delay(480, HOP, 0), 480);
++        assert_eq!(required_delay(256, HOP, 0), 704);
++        assert_eq!(required_delay(32, HOP, 0), 480);
++    }
++}

@@ -5,14 +5,22 @@ full model as the LADSPA plugin EasyEffects loads, and `jayos-denoise`, the
 command that writes EasyEffects' input preset for it and switches it on and
 off. Built for [JayOS](https://github.com/Jadocee/jayos); usable without it.
 
+The plugin is the DeepFilterNet Plus fork at a pinned commit with one patch
+of this package's, which stops it cutting the microphone out: as the fork
+ships it, a frame of inference that runs late is a quantum of silence, and
+it ran with 0.7 ms to be late by.
+
 Nothing here has run on an Arch machine, and nothing has been listened to.
 The engine is tested against a fake EasyEffects 8.2.9 that plays the daemon's
 end of its socket (`tests/shell/test-engine.sh`). The plugin was built at the
 pinned commit in a sandbox with no sound server on 2026-10-03, and
 `packaging/steps.sh check` passed over it: the full model inside the `.so`
-and the low-latency one not, and the fork's three tests passing. makepkg,
-pacman and a real EasyEffects have not run. `docs/DEEPFILTERNET.md` says
-which of its numbers were measured and which were read.
+and the low-latency one not, and the fork's three tests passing. On
+2026-10-17 it was built again, with and without the patch, and both were
+driven by a LADSPA host paced the way PipeWire paces a filter
+(`docs/DEEPFILTERNET.md`, *Dropouts*). makepkg, pacman and a real EasyEffects
+have not run. `docs/DEEPFILTERNET.md` says which of its numbers were measured
+and which were read.
 
 ## What is here
 
@@ -20,10 +28,11 @@ which of its numbers were measured and which were read.
 |---|---|
 | `src/jayos-denoise` | The engine. Writes one input preset, `denoise`, from a strength name, and asks the running EasyEffects to load it and believes the load only when EasyEffects answers that it holds it. Off is the same preset with the filter bypassed. Knows nothing about whether noise suppression should be on: whatever draws the switch says. |
 | `src/easyeffects-lib.sh` | Where EasyEffects 8.x keeps its presets and settings, and how to speak to its socket. A copy of JayOS's; its header names the commit to diff against and the two edits. |
-| `packaging/steps.sh` | The steps both recipes call: check the pinned commit out, fetch locked, build with the full model, prove what was built, run the fork's tests, install. Every build flag and the file list are here, once. |
+| `packaging/steps.sh` | The steps both recipes call: check the pinned commit out and patch it, fetch locked, build with the full model, prove what was built, run the fork's tests, install. Every build flag and the file list are here, once. |
+| `packaging/patches/` | This package's changes to the plugin, applied in name order onto the pin: one today, which holds a headroom of delay above what the host's quantum needs, set up before the first sample, so a late frame of inference is absorbed instead of heard. Each patch's header says why; `steps.sh check` proves the tree it built from carries them. |
 | `packaging/arch/PKGBUILD` | Builds and installs this checkout. Its `_commit=` line is the plugin's pin, for both recipes. |
 | `contract/` | What JayOS tests its side against: the engine's commands, its status keys, the strengths, every preset it writes, the names a desktop writes into its own code, and `steps.sh`'s verbs. Generated; see `contract/README.md`. |
-| `docs/DEEPFILTERNET.md` | Why this fork, why `--no-default-features`, what each strength sets, what a build costs, and what to check on a machine. Mostly moved, verbatim, from JayOS. |
+| `docs/DEEPFILTERNET.md` | Why this fork, why it is patched, why `--no-default-features`, what each strength sets, what a build costs, and what to check on a machine. Mostly moved, verbatim, from JayOS. |
 | `tests/shell/` | The engine against a fake EasyEffects (`test-engine.sh`); the recipe and the steps against fakes (`test-packaging.sh`, `test-steps.sh`); `tools/contract.sh` and `tools/check.sh` against scratch copies of this tree (`test-contract.sh`); and properties of the code that no behavioural test can hold (`test-source-guards.sh`). |
 | `tools/check.sh` | Everything above that needs no Rust toolchain, in one run. |
 | `tools/contract.sh` | Compares `contract/` with what the code produces; `--write` rewrites it. |

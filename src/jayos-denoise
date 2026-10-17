@@ -19,8 +19,9 @@
 # EasyEffects' "Deep Noise Remover" is DeepFilterNet's LADSPA plugin, opened
 # at runtime from /usr/lib/ladspa/libdeep_filter_ladspa.so. The plugin is in
 # no Arch repository; this package builds it from a pinned commit of the
-# DeepFilterNet Plus fork with the full DeepFilterNet3 model embedded
-# (packaging/arch/PKGBUILD's _commit, docs/DEEPFILTERNET.md). This script is
+# DeepFilterNet Plus fork with the full DeepFilterNet3 model embedded and
+# this package's patches applied (packaging/arch/PKGBUILD's _commit,
+# packaging/patches/, docs/DEEPFILTERNET.md). This script is
 # everything between that file and a switch: it writes ONE input preset,
 # `denoise`, from a strength name, and asks the running instance to load it.
 #
@@ -75,10 +76,13 @@
 #   - apply's "did not load" and "did not reload" are on stdout, with
 #     load_preset's "socat is not installed" folded in; they were on stderr
 #     (the head of the apply arm says why).
+#   - Since the move, on 2026-10-17: BUFFER is 2 in all three of
+#     strength_params()'s arms, where it was 0 (its comment says why).
 #
 # The rest is the same code with the same reasons. Nothing holds this list
 # to the code: it was made on 2026-10-04 from a diff of the two files with
-# comment lines and trailing comments stripped.
+# comment lines and trailing comments stripped, and the last entry added
+# with the change it names.
 
 set -uo pipefail
 
@@ -149,8 +153,26 @@ die() { echo "jayos-denoise: $*" >&2; exit 1; }
 #                                   frame goes through both stages. libDF warns
 #                                   unless min <= max-DF <= max-ERB, which
 #                                   every row below satisfies.
-#   min-processing-buffer (frames)  extra frames queued before processing.
-#                                   Each is 10 ms of latency; 0 everywhere.
+#   min-processing-buffer (frames)  headroom: frames of delay held above what
+#                                   the host's quantum needs, which the
+#                                   plugin's inference thread may run late by
+#                                   before the microphone loses a quantum to
+#                                   silence. This package's plugin sets it up
+#                                   before the first sample and never trims
+#                                   below it (packaging/patches/0001-*); the
+#                                   fork's only stopped its trim below that
+#                                   many frames, counted from nothing rather
+#                                   than from what the quantum needs, so at a
+#                                   quantum of 1024 two frames changed
+#                                   nothing. It was 0 here, for latency, and
+#                                   0 was a microphone that cut out whenever
+#                                   a frame ran late: RUN against the plugin
+#                                   in a host paced like PipeWire, 15 gaps
+#                                   and 11 skips in twelve minutes, where 2
+#                                   left 6 gaps and no skip
+#                                   (docs/DEEPFILTERNET.md, "Dropouts"). 2
+#                                   everywhere, 20 ms: the three strengths
+#                                   cost the same per frame.
 #   post-filter-beta (0-0.05)       a post-filter that sharpens attenuation
 #                                   when it is above 0. 0.02 is EasyEffects'
 #                                   default; 0.05 the ceiling.
@@ -159,9 +181,9 @@ die() { echo "jayos-denoise: $*" >&2; exit 1; }
 # are meant to be told apart in a recording, and JayOS's popup cycles them.
 strength_params() { # strength_params <name>  -> ATTEN MIN_T MAX_ERB MAX_DF BUFFER BETA
     case "$1" in
-        gentle)   ATTEN=24.0;  MIN_T=-15.0; MAX_ERB=30.0; MAX_DF=20.0; BUFFER=0; BETA=0.02 ;;
-        balanced) ATTEN=70.0;  MIN_T=-15.0; MAX_ERB=30.0; MAX_DF=20.0; BUFFER=0; BETA=0.02 ;;
-        maximum)  ATTEN=100.0; MIN_T=-15.0; MAX_ERB=35.0; MAX_DF=35.0; BUFFER=0; BETA=0.05 ;;
+        gentle)   ATTEN=24.0;  MIN_T=-15.0; MAX_ERB=30.0; MAX_DF=20.0; BUFFER=2; BETA=0.02 ;;
+        balanced) ATTEN=70.0;  MIN_T=-15.0; MAX_ERB=30.0; MAX_DF=20.0; BUFFER=2; BETA=0.02 ;;
+        maximum)  ATTEN=100.0; MIN_T=-15.0; MAX_ERB=35.0; MAX_DF=35.0; BUFFER=2; BETA=0.05 ;;
         *) return 1 ;;
     esac
 }
