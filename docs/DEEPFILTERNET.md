@@ -1,17 +1,19 @@
 # DeepFilterNet 3: the plugin this package builds
 
 Why the plugin comes from the DeepFilterNet Plus fork at a pinned commit, why
-it is built with `--no-default-features`, what each strength sets, what a
-build costs, and what to check on a machine once it is installed. The code is
-the detail, and where the code and this document disagree, the code is
-current: `packaging/steps.sh` holds every build flag, every proof and the
-file list; the `_commit=` line of `packaging/arch/PKGBUILD` is the pin, and
-`bash packaging/steps.sh pin` prints it; `strength_params()` in
-`src/jayos-denoise` holds the numbers behind each strength, and
-`tests/shell/test-engine.sh` fails unless the table under *Strength* states
-them.
+this package patches it, why it is built with `--no-default-features`, what
+each strength sets, what a build costs, and what to check on a machine once it
+is installed. The code is the detail, and where the code and this document
+disagree, the code is current: `packaging/steps.sh` holds every build flag,
+every proof and the file list; the `_commit=` line of `packaging/arch/PKGBUILD`
+is the pin, and `bash packaging/steps.sh pin` prints it;
+`packaging/patches/` holds what this package changes in the fork, each patch
+with its reason in its header; `strength_params()` in `src/jayos-denoise`
+holds the numbers behind each strength, and `tests/shell/test-engine.sh`
+fails unless the table under *Strength* states them.
 
-This preface is current on 2026-10-04. Everything after it MOVED HERE from
+This preface is current on 2026-10-04, and *Dropouts, and the headroom that
+stops them*, after it, on 2026-10-17. Everything after those two MOVED HERE from
 jayos when the engine and the plugin did, verbatim, from `docs/AUDIO.md` at
 jayos commit `bf53d6a`: that file's lines 347-864, less what is marked
 `[...]` -- lines 596-641, 663-742, 782, 800-804, and 836 through the first
@@ -52,6 +54,168 @@ build below; NEEDED `libgcc_s.so.1`, `libm.so.6`, `libc.so.6` and
 4 min 22 s and about 1 min 40 s, are jayos's build of the same commit, and
 its other figures -- 452 crates fetched, about 145 compiled, 176 MB and
 522 MB -- were not measured again.
+
+## Dropouts, and the headroom that stops them
+
+With noise suppression on, turning EasyEffects' effects on -- jayos's volume
+popup has a switch for it -- made the microphone choppy, cutting in and out
+with a delay that wandered, and bypassing them made it clean again. The
+bypass is EasyEffects' global one, and it takes every plugin out of the input
+chain: with it on, the microphone is linked straight to the spectrum, the
+output level meter and EasyEffects' source, and DeepFilterNet is not in the
+path at all
+(`StreamInputEffects::connect_filters` in `src/stream_input_effects.cpp` at
+v8.2.9, READ). So it was the plugin. It is, at the pin, as the fork ships it;
+`packaging/patches/0001-ladspa-hold-headroom-above-the-host-quantum.patch`
+is the fix, and the presets now ask for two frames of headroom.
+
+### What the plugin did
+
+EasyEffects calls the plugin's `run()` once per PipeWire cycle with the
+cycle's quantum (`on_process` in `src/plugin_base.cpp` at v8.2.9, READ). The
+fork's `run()` (`ladspa/src/lib.rs` at the pin, READ, and RUN below) never
+waits for the thread the model runs in: it pushes the quantum into an input
+queue and takes a quantum out of an output queue, and when the output queue
+is short -- the thread has not finished the frames it needs -- it writes the
+whole quantum as silence and grows its delay by that much. Ten seconds after
+the delay last changed, if a frame of it went unused, it trims a frame back
+off, which skips 10 ms of audio. Three things together made that a
+microphone that cut out:
+
+* **The delay was reached through silence, and only just.** It starts at one
+  frame, 480 samples, grows only by underruns, and stops at the first value
+  that serves the quantum that failed. What a quantum needs is the quantum
+  plus the most the input queue can hold short of a frame while the quantum
+  and the 480-sample hop go in and out of step, 480 less their greatest
+  common divisor, so at PipeWire's default quantum the fork settled 32
+  samples above the edge:
+
+  | quantum | needs | the fork settles at | which leaves |
+  |---:|---:|---:|---|
+  | 128 | 576 | 960 | 384 samples, 8.0 ms |
+  | 256 | 704 | 960 | 256 samples, 5.3 ms |
+  | 480 | 480 | 480 | nothing |
+  | 512 | 960 | 992 | 32 samples, 0.7 ms |
+  | 1024 | 1472 | 1504 | 32 samples, 0.7 ms |
+  | 2048 | 2496 | 2528 | 32 samples, 0.7 ms |
+
+* **The thread is an ordinary one, and its frames vary.** A frame of the full
+  model in the stereo instance EasyEffects opens took a median of 3.6 ms, 10.8
+  at the 99.9th percentile and 25 at most (RUN, 6,000 frames at a quantum of
+  480, below), and the thread competes with everything else on the machine.
+  Every frame that ran later than the margin above was a quantum of silence,
+  and every trim put the delay back where the next one landed.
+* **`min-processing-buffer` was 0, and could not have done the job.** The
+  presets set it to 0 for latency (*Strength* and *Latency*, below, as
+  written). In the fork it is only a floor under the trim, counted in frames
+  from nothing rather than from what the quantum needs, and it adds no sample
+  before the first underrun: at a quantum of 1024, which needs more than
+  three frames already, a floor of two changes nothing at all.
+
+### What the patch does
+
+`packaging/steps.sh checkout` applies it to the pinned commit, and `check`
+proves the tree it built from is that commit with it and nothing else. It
+changes `run()` in three ways, and adds two tests:
+
+1. The delay is set up before the first output, not reached through
+   underruns: what the quantum needs (`required_delay()`), plus
+   `min-processing-buffer` frames of headroom for the thread to be late by.
+   Again when a quantum needs more than is queued -- an underrun that is
+   certain, not a late thread -- and when the headroom is raised.
+2. The trim never takes the delay below that.
+3. An overload episode -- underruns until one second has passed clean --
+   raises that floor by a frame, up to eight, and each is given back after
+   five minutes with no underrun. A stall the headroom did not cover is one
+   the machine has; the fork trimmed the frame it cost straight back.
+
+The tests hold `required_delay()` to a simulation of the two queues: for
+fourteen quanta from 32 to 8192 and six starting remainders, the delay it
+names serves every cycle and one sample less does not. Mutated twice -- the
+remainder term dropped, then the greatest common divisor -- each failed.
+The fork's three tests still pass over the patched source. With
+`RUST_LOG=info`, the plugin says what it chose when it primes:
+`Holding 50.7ms for a quantum of 1024, 20.0ms of it headroom`.
+
+The presets set `min-processing-buffer` to 2 at every strength: 20 ms. The
+three strengths cost the same per frame -- a median of 3.6 ms each over the
+same 30 s (RUN) -- so there is no reason for them to differ.
+
+### What it was measured with, and what that is worth
+
+RUN on 2026-10-17, in a sandbox with no sound server: a four-vCPU virtual
+machine, an Intel Xeon at 2.80 GHz. The fork was built at the pin twice, with
+`packaging/steps.sh build`'s flags, without the patch and with it, and the
+patched tree was then taken through `steps.sh checkout`, `build` and `check`
+as makepkg would take it: the patch applied, and `check` passed in 1 min
+54 s, its model proofs, the patch's proof and five tests among it. A host
+written in C for the purpose `dlopen`ed each `.so`, instantiated
+`deep_filter_stereo` at 48 kHz as EasyEffects does, set the six control
+ports as the balanced preset sets them, and called `run()` once per quantum
+from a `SCHED_FIFO` thread on an absolute clock, a quantum's worth of time
+apart -- the shape of PipeWire's data thread, not PipeWire. Its input was the
+fork's own `assets/noisy_snr0.wav`, speech at 0 dB SNR, looped, the same
+samples in both channels, as EasyEffects feeds a mono microphone to the
+stereo instance. A gap is a run of exact zeros in the output, at least 32
+samples long, after the first second; an episode and a trim are the plugin's
+own log lines. "Loaded" is two threads spinning at nice 0, half the vCPUs.
+Two minutes per row:
+
+| run | the fork as it ships, `min-processing-buffer` 0 | patched, 2 |
+|---|---|---|
+| idle, quantum 256 | 2 gaps, 20 ms of silence | 2 gaps, 20 ms |
+| idle, quantum 480 | 1 gap, 10 ms; 1 trim | none |
+| idle, quantum 1024 | 1 gap, 21 ms; 2 trims | none |
+| loaded, quantum 256 | 4 gaps, 40 ms | 3 gaps, 30 ms |
+| loaded, quantum 480 | 3 gaps, 30 ms; 1 trim | 1 gap, 40 ms |
+| loaded, quantum 1024 | 4 gaps, 85 ms; 7 trims | none |
+| **twelve minutes** | **15 gaps and 11 trims** | **6 gaps, no trim** |
+
+And five minutes per row, one thread spinning:
+
+| run | the fork as it ships, `min-processing-buffer` 0 | patched, 2 |
+|---|---|---|
+| quantum 1024 | 6 gaps, 128 ms of silence; 11 trims | 1 gap, 21 ms; 1 trim |
+| quantum 256 | 14 gaps, 160 ms; 11 trims | 6 gaps, 60 ms; 2 trims |
+
+At 256 the patched plugin's floor rose a frame with each of its four
+episodes, from 34.7 ms to 74.7, as the third change above says it should.
+The last episode was three underruns long and took the delay to 94.7 ms; the
+two trims brought it back down to the floor and no further.
+
+Every gap left in the patched column is a stall of more than the 20 ms of
+headroom, and this machine has them: its four vCPUs lost 99.3 s between them
+to the hypervisor in the 96 minutes after it booted, in bursts, and the
+thread's slowest frame there was 25 ms of work that is 3.6 at the median.
+One episode outran the headroom by four frames, 40 ms: no headroom a
+microphone could afford covers a stall that long, and the next paragraph says
+what this machine's stalls are worth as evidence about another's.
+Raising the inference thread to nice -10 under the same load did not help
+the fork either (3 gaps at 256; 2 gaps and 5 trims at 1024, RUN): this is a
+margin problem, not a priority one.
+
+What that is worth: the mechanism, both columns' differences, and the
+arithmetic are run evidence. The rates are this virtual machine's. A desktop
+with no hypervisor and a faster core -- the Ryzen 9 7950X jayos is built for --
+runs a frame in less time and stalls less often, so the fork's gaps there are
+rarer and the patched plugin's rarer still; how rare is not known. Not run:
+EasyEffects, PipeWire, a microphone, and anybody listening.
+
+### What it costs
+
+The delay is the price, on top of the model's own and the quantum's
+(*Latency*, below). Computed from `required_delay()` and the headroom, and
+the 256 and 1024 rows RUN, as the plugin's own `Holding` lines:
+
+| quantum | the fork, settled | patched |
+|---:|---:|---:|
+| 256 | 960 samples, 20.0 ms | 1664, 34.7 ms |
+| 480 | 480, 10.0 ms | 1440, 30.0 ms |
+| 1024 | 1504, 31.3 ms | 2432, 50.7 ms |
+| 2048 | 2528, 52.7 ms | 3456, 72.0 ms |
+
+The fork's figures are its best case: each underrun moved them up, by a
+quantum at a time, until a trim brought them back.
 
 ## Noise suppression on the microphone
 
@@ -101,6 +265,11 @@ overload degrades to passthrough rather than a stall (its
 `docs/LADSPA_OVERLOAD_REPORT.md` records two desktop sessions lost to the old
 behaviour), and stereo inference works, which matters because EasyEffects
 opens the stereo instance.
+
+*[What the callback does instead of blocking is write the quantum as
+silence, and with the delay the fork settles at, that was every frame that
+ran late: *Dropouts, and the headroom that stops them*, above, and
+`packaging/patches/`, which this package applies to the pin.]*
 
 Not the AUR: `deepfilternet-plus-bin`, `deepfilternet-plus-git` and
 `deepfilternet-plugin-pipewire-bin` all `provides`/`conflicts` on
@@ -155,9 +324,13 @@ two cannot drift apart quietly.
 
 | strength | attenuation-limit | min / max-ERB / max-DF thresholds | buffer | post-filter-beta | why |
 |---|---|---|---|---|---|
-| gentle | 24 | -15 / 30 / 20 | 0 | 0.02 | upstream's "medium reduction" ceiling: noise is softened, not deleted, and room tone survives |
-| balanced | 70 | -15 / 30 / 20 | 0 | 0.02 | the default; the range EasyEffects' own manual calls balanced |
-| maximum | 100 | -15 / 35 / 35 | 0 | 0.05 | no cap; every frame goes through both stages; the strongest post-filter |
+| gentle | 24 | -15 / 30 / 20 | 2 | 0.02 | upstream's "medium reduction" ceiling: noise is softened, not deleted, and room tone survives |
+| balanced | 70 | -15 / 30 / 20 | 2 | 0.02 | the default; the range EasyEffects' own manual calls balanced |
+| maximum | 100 | -15 / 35 / 35 | 2 | 0.05 | no cap; every frame goes through both stages; the strongest post-filter |
+
+*[The buffer column was 0 in every row until 2026-10-17, and the table is
+held to `strength_params()`, so it says 2 now; the bullet below says what 0
+was taken to mean, and *Dropouts* what it cost.]*
 
 What each column is, from `libDF`'s `tract.rs` and the plugin's port
 descriptors:
@@ -190,6 +363,12 @@ descriptors:
   every row satisfies.
 * **buffer** (frames): extra frames queued before processing. Each is 10 ms
   of latency, so it is 0 everywhere.
+
+  *[Neither, in the fork: it was a floor under the plugin's trim of its own
+  delay, and changed nothing at a quantum of 1024. With this package's patch
+  it is headroom -- frames of delay held above what the host's quantum
+  needs, set up before the first sample -- and it is 2 everywhere, 20 ms.
+  *Dropouts*.]*
 * **post-filter-beta** (0–0.05): a post-filter that sharpens attenuation when
   it is above 0. 0.02 is EasyEffects' default, 0.05 the ceiling.
 
@@ -208,6 +387,12 @@ lookahead out — its `get_latency_seconds()` for this plugin does not include
 it — so the latency figure in its window is short by roughly that much. A
 microphone can afford 40 ms; a path that monitors itself in headphones could
 not, and nothing here routes one through it.
+
+*[This left out the plugin's own queue, which holds the delay the quantum
+needs and, with this package's patch, two frames of headroom above it:
+50.7 ms at PipeWire's default quantum of 1024, where the fork held 31.3 ms at
+best and moved up from there with every underrun. *Dropouts* has the table.
+EasyEffects reports none of it.]*
 
 ### CPU
 
@@ -442,6 +627,17 @@ pw-record -P '{ node.dont-fallback = true }' --target easyeffects_source gentle.
 warnings go, including the overload lines ("Output underrun, increasing
 processing latency", one per episode) that mean the machine could not keep
 up.
+
+*[The fork as it ships wrote one of those at every start, because its delay
+began at one frame, and one more for every frame that ran late, each a
+quantum of silence. This package's plugin primes its delay instead, so on a
+machine that keeps up there is none; one now means a stall longer than the
+headroom, and each raises the floor by a frame for five minutes. Started
+with `RUST_LOG=info`, as in step 1, it also says the delay it chose:
+`Holding 50.7ms for a quantum of 1024, 20.0ms of it headroom`. That line is
+also how to tell which plugin is installed, without starting anything:
+`grep -c 'ms for a quantum of' /usr/lib/ladspa/libdeep_filter_ladspa.so`
+counts 1 in this package's plugin and 0 in the fork's.]*
 
 *[Without jayos, step 4's three recordings are made after
 `jayos-denoise set on gentle`, `jayos-denoise set on balanced` and

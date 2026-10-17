@@ -105,16 +105,27 @@ generate() { # generate <dir>
     } > "$dir/status-keys.txt"
 
     # The names a desktop writes into its own code: the preset's name, the
-    # plugin's file and its key inside the preset, and where EasyEffects
-    # looks for the file when LADSPA_PATH is unset.
+    # plugin's file and its key inside the preset, where EasyEffects looks
+    # for the file when LADSPA_PATH is unset, and a string the plugin this
+    # package builds carries and the fork's does not. That last is a piece
+    # of the line the headroom patch logs when it primes its delay -- the
+    # words between the delay's placeholder and the quantum's, which rustc
+    # keeps whole in the .so as a literal of the format string -- so a
+    # desktop can tell the two plugins apart by reading the installed file,
+    # with nothing started. jayos's doctor does.
     dirs=$(sed -n -E 's/.*\|\| dirs="([^"]*)".*/\1/p' "$LIB")
     [[ -n "$dirs" && "$dirs" != *$'\n'* ]] || die "could not read one default LADSPA list out of $LIB"
+    mark=$(cat "$ROOT"/packaging/patches/*.patch 2>/dev/null \
+           | sed -n -E 's/^\+.*"DF \{\} \| Holding \{:\.1\}([^{"]+) \{\}.*$/\1/p')
+    [[ -n "$mark" && "$mark" != *$'\n'* ]] \
+        || die "could not read one headroom line out of packaging/patches/ (\"DF {} | Holding {:.1}ms for a quantum of {}\")"
     { header "Names a desktop may write into its own code, one 'name value' per line." \
-             "the engine, its library and its presets"
+             "the engine, its library, its presets and its patches"
       printf 'preset-name %s\n' "$(sed -n -E 's/^PRESET_NAME="([^"]+)"$/\1/p' "$ENGINE")"
       printf 'plugin-file %s\n' "$(bash -c 'source "$1"; printf %s "$EE_PLUGIN_SO"' _ "$LIB")"
       printf 'plugin-key %s\n' "$(jq -r '.input.plugins_order[0]' "$dir/preset.balanced.json")"
       printf 'ladspa-dirs %s\n' "$dirs"
+      printf 'headroom-mark %s\n' "$mark"
     } > "$dir/facts.txt"
 
     # The verbs of packaging/steps.sh, which JayOS's recipe calls: one per

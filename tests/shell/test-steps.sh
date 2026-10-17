@@ -303,6 +303,65 @@ steps checkout
 expect_fail "no tree at all is a usage error" "usage:"
 
 echo
+echo "checkout: the package's patches, onto the pin and only once"
+
+# Two patches to the fork's one file, made by git from the pinned commit, the
+# second written over the first -- so applying them out of order, or each
+# against the bare commit, refuses the second -- and a third, later, that
+# applies to nothing here. Kept aside between the cases that want them: the
+# scratch checkout has no packaging/patches/ for any other case, as a tree
+# that carries no patch has none, and check's cases further down run over a
+# plugin tree that is no clone at all.
+PATCHES="$REPO/packaging/patches"
+SAVED_PATCHES="$WORK/patches"
+mkdir -p "$SAVED_PATCHES"
+git -C "$FORK" checkout -q --force --detach "$C2"
+printf 'commit 2, patched\n' > "$FORK/file"
+git -C "$FORK" diff > "$SAVED_PATCHES/0001-first.patch"
+git -C "$FORK" add file
+printf 'commit 2, patched twice\n' > "$FORK/file"
+git -C "$FORK" diff > "$SAVED_PATCHES/0002-second.patch"
+git -C "$FORK" reset -q
+git -C "$FORK" checkout -q --force --detach "$C2"
+use_patches() { rm -rf "$PATCHES"; mkdir -p "$PATCHES"; cp "$SAVED_PATCHES"/*.patch "$PATCHES/"; }
+fork_file_is() { # fork_file_is <label> <content>
+    if [[ "$(<"$FORK/file")" == "$2" ]]; then
+        pass "$1"
+    else
+        bad "$1: the fork's file holds '$(<"$FORK/file")', not '$2'"
+    fi
+}
+
+use_patches
+pin_to "$C2"
+steps checkout "$FORK"
+expect_ok "checkout applies the patches"
+fork_file_is "in name order, the second over the first" "commit 2, patched twice"
+if [[ "$(git -C "$FORK" rev-parse HEAD)" == "$C2" ]]; then
+    pass "and HEAD is still the pin: the patches are in the tree, not committed"
+else
+    bad "HEAD moved to $(git -C "$FORK" rev-parse HEAD) applying the patches"
+fi
+# The case --force is there for. RUN with the flag deleted from
+# step_checkout: the second checkout exited 1, refusing 0001 over itself.
+steps checkout "$FORK"
+expect_ok "a second checkout of the patched clone passes"
+fork_file_is "and the patches are in it once, not applied over themselves" "commit 2, patched twice"
+printf 'a hand edit\n' > "$FORK/file"
+steps checkout "$FORK"
+expect_ok "a tracked file changed by hand is put back to the pin before the patches go on"
+fork_file_is "and patched as if it had never been touched" "commit 2, patched twice"
+printf '%s\n' 'diff --git a/file b/file' '--- a/file' '+++ b/file' '@@ -1 +1 @@' \
+    '-a line no commit here has' '+anything' > "$PATCHES/0003-stale.patch"
+steps checkout "$FORK"
+expect_fail "a patch that applies to nothing here stops the checkout, naming it" \
+    "packaging/patches/0003-stale.patch does not apply to $C2"
+rm -rf "$PATCHES"
+steps checkout "$FORK"
+expect_ok "with no packaging/patches/ at all, checkout is the pin alone"
+fork_file_is "and the pin's own file, unpatched" "commit 2"
+
+echo
 echo "fetch and build: cargo's arguments and environment"
 
 HOST=x86_64-jayostest-linux-gnu
@@ -624,6 +683,36 @@ expect_fail "a preset whose off does not bypass fails" "off, is not JSON with th
 # first strength: that let it through with exit 0.
 check_tree sed -i 's/^        maximum)  ATTEN=100\.0;/        maximum)  ATTEN=;/' "$REPO/src/jayos-denoise"
 expect_fail "a preset broken for the last strength alone fails, naming it" "the maximum preset is not JSON with the filter on"
+
+echo "  -- the patches"
+# The fork's clone as check finds it after checkout: patched, with the models
+# and a build beside them as files git does not track, which the proof must
+# not compare -- a build's target/ is exactly that.
+patched_tree() {
+    baseline
+    use_patches
+    pin_to "$C2"
+    steps checkout "$FORK"
+    mkdir -p "$FORK/models" "$FORK/target/release"
+    cp "$PLUG"/models/*.tar.gz "$FORK/models/"
+    cp "$SO" "$FORK/target/release/"
+}
+patched_tree
+steps check "$FORK"
+expect_ok "the pin with every patch in it, a build beside it, passes"
+patched_tree
+git -C "$FORK" checkout -q --force --detach "$C2"
+steps check "$FORK"
+expect_fail "the pin without its patches fails: a recipe that never ran checkout" "is not commit $C2 with packaging/patches/ applied"
+patched_tree
+git -C "$FORK" apply --reverse "$PATCHES/0002-second.patch"
+steps check "$FORK"
+expect_fail "the first patch without the second fails" "is not commit $C2 with packaging/patches/ applied"
+patched_tree
+printf 'and a line no patch adds\n' >> "$FORK/file"
+steps check "$FORK"
+expect_fail "every patch and a change of nobody's to a tracked file fails" "and only that"
+rm -rf "$PATCHES"
 
 echo
 echo "package: the installed layout"

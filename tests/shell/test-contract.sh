@@ -206,6 +206,30 @@ contract/strengths.txt differs from what the code produces"
     fi
 fi
 
+# THE HEADROOM MARK is read out of the patch, not written down: the line the
+# patch logs, reworded, changes facts.txt and nothing else; and a tree whose
+# patches log no such line cannot produce the contract at all, rather than
+# producing one without the mark -- which jayos would vendor and its doctor
+# would then compare an installed plugin with nothing.
+D=$(fresh)
+if mutate "$D/packaging/patches/0001-ladspa-hold-headroom-above-the-host-quantum.patch" \
+        's/(Holding \{:\.1\}ms for )a (quantum of \{\})/\1each \2/'; then
+    contract "$D"
+    expect "the patch's priming line, reworded, names facts.txt, and nothing else" 1 \
+        "contract/facts.txt differs from what the code produces"
+    says "and shows the new mark" "headroom-mark ms for each quantum of"
+fi
+D=$(fresh)
+if mutate "$D/packaging/patches/0001-ladspa-hold-headroom-above-the-host-quantum.patch" \
+        '/Holding \{:\.1\}ms for a quantum of/d'; then
+    contract "$D"
+    if [[ "$STATUS" == 1 ]] && grep -qF "could not read one headroom line out of packaging/patches/" <<<"$OUT"; then
+        pass "patches that log no priming line stop the contract, saying what was looked for"
+    else
+        bad "patches with no priming line: exit $STATUS, and: $(head -3 <<<"$OUT" | tr '\n' ';')"
+    fi
+fi
+
 # EACH generated file, deleted, is named -- and is the only one named.
 missing_named=0
 for name in "${GENERATED[@]}"; do
