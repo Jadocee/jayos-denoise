@@ -3,7 +3,8 @@
 # The build, check and install steps of the jayos-denoise package.
 #
 #   steps.sh pin                          print the plugin commit this tree pins
-#   steps.sh checkout <plugin-tree>       check that commit out, and prove it is out
+#   steps.sh checkout <plugin-tree>       check that commit out, prove it is out, and
+#                                         apply packaging/patches/ to it
 #   steps.sh fetch <plugin-tree>          cargo fetch, locked, for this host only
 #   steps.sh build <plugin-tree>          build the plugin with the full model
 #   steps.sh check <plugin-tree>          prove what was built, run the fork's tests,
@@ -38,6 +39,16 @@
 # comment-stripped copy, and refused unless it is exactly one line of forty
 # lowercase hex digits: a short id or a tag is a pin git does not verify.
 #
+# THE PATCHES
+#
+# packaging/patches/*.patch, in name order, onto the pinned commit, by
+# `checkout`; `check` proves the tree it checks is that commit with every one
+# of them in it and nothing else. They are this package's changes to the
+# plugin, each with its reason in its own header, and docs/DEEPFILTERNET.md
+# names them. A bump of the pin is the _commit= line and whatever patch no
+# longer applies to the new commit: the checkout stops on that one, naming
+# it, before anything is fetched.
+#
 # WHY THIS FORK, WHY --no-default-features, WHAT A BUILD COSTS
 #
 # docs/DEEPFILTERNET.md, which has the reasoning and the numbers; what
@@ -47,6 +58,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
 RECIPE="$ROOT/packaging/arch/PKGBUILD"
+PATCHES="$ROOT/packaging/patches"
 SO_NAME="libdeep_filter_ladspa.so"
 
 die() { echo "steps.sh: $*" >&2; exit 1; }
@@ -68,6 +80,16 @@ pinned_commit() {
     [[ "$lines" =~ ^[0-9a-f]{40}$ ]] \
         || die "$RECIPE's _commit is '$lines', not a full forty-digit commit id"
     printf '%s\n' "$lines"
+}
+
+# The patches, one path per line, in the order they apply: the glob's, in the
+# C locale's byte order, so the order is the names' on every machine and not
+# whatever the building user's collation makes of them.
+patch_list() {
+    local LC_ALL=C p
+    for p in "$PATCHES"/*.patch; do
+        [[ -f "$p" ]] && printf '%s\n' "$p"
+    done
 }
 
 # The tree a step was handed, which every step but `pin` needs.
@@ -101,10 +123,52 @@ step_checkout() {
     # has it reachable from any ref -- v1.0.2 is the tag that names it. A
     # recipe that already asked makepkg for #commit= gets a checkout of the
     # same commit, which is then proved like any other.
-    git -C "$tree" -c advice.detachedHead=false checkout --quiet --detach "$pin" 2>/dev/null \
+    #
+    # --force puts every tracked file back to the commit, so the patches
+    # below always go onto the pin itself: a second prepare() over the same
+    # srcdir hands this a clone it has already patched, whose HEAD the
+    # checkout does not move, and a patch applied over itself is refused.
+    # Asking each patch whether it is already there instead is no answer --
+    # git apply --reverse --check reads a patch against the tree as it is,
+    # so the first of two patches to one file reads as absent once the
+    # second is in (RUN, git 2.43). Untracked files, cargo's target/ among
+    # them, are left alone.
+    git -C "$tree" -c advice.detachedHead=false checkout --quiet --force --detach "$pin" 2>/dev/null \
         || die "commit $pin is not in $tree; the fork no longer has it, or the clone is not of the fork"
     head=$(git -C "$tree" rev-parse HEAD 2>/dev/null) || die "git could not say what $tree holds"
     [[ "$head" == "$pin" ]] || die "$tree is at $head after checking out $pin"
+
+    # In order, each checked against the tree the ones before it made, so a
+    # patch to a file an earlier one changed is read the way it was written.
+    # One that does not apply stops here, before the fetch, naming itself: a
+    # patch written for the commit before a bump.
+    local p name
+    while IFS= read -r p; do
+        name=${p#"$ROOT/"}
+        git -C "$tree" apply --check "$p" 2>/dev/null \
+            || die "$name does not apply to $pin, after the patches before it; a patch written for another commit has to be refreshed for this one"
+        git -C "$tree" apply "$p" || die "git could not apply $name to $tree"
+    done < <(patch_list)
+}
+
+# 0 when the tracked files of <tree> are exactly <commit> with every patch
+# applied in order. The patches go into a scratch index made from the commit,
+# never into the tree, and the tree is compared with that index: a patch
+# missing, one left out of the middle, or any other change to a tracked file
+# is a difference. Untracked files -- the build's target/ -- are not
+# compared. One at a time, as checkout applies them: `git apply --check` with
+# several patches reads each against the tree alone, and refused two that
+# apply in order (RUN, git 2.43).
+carries_patches() { # carries_patches <tree> <commit>
+    local tree=$1 commit=$2 dir p rc=0
+    dir=$(mktemp -d) || return 1
+    GIT_INDEX_FILE="$dir/index" git -C "$tree" read-tree "$commit" 2>/dev/null || rc=1
+    while (( rc == 0 )) && IFS= read -r p; do
+        GIT_INDEX_FILE="$dir/index" git -C "$tree" apply --cached "$p" 2>/dev/null || rc=1
+    done < <(patch_list)
+    (( rc == 0 )) && { GIT_INDEX_FILE="$dir/index" git -C "$tree" diff --quiet 2>/dev/null || rc=1; }
+    rm -rf "$dir"
+    return "$rc"
 }
 
 step_fetch() {
@@ -186,10 +250,21 @@ links_only_depends() { # links_only_depends <so>
 }
 
 check_plugin() { # check_plugin <tree>
-    local tree=$1 so ftree syms
+    local tree=$1 so ftree syms pin
     so="$tree/target/release/$SO_NAME"
     [[ -f "$so" ]] || die "no $so; build first"
     cargo_env "$tree"
+
+    # The tree is the pin with every patch in it and nothing else: what was
+    # built from it is the plugin this package is, and the fork's tests below
+    # run over the patched source, the patches' own tests among them. A
+    # recipe that let makepkg's #commit= checkout stand and never ran
+    # `checkout` would otherwise build the fork as it is and pass.
+    if [[ -n "$(patch_list)" ]]; then
+        pin=$(pinned_commit) || exit 1
+        carries_patches "$tree" "$pin" \
+            || die "$tree is not commit $pin with packaging/patches/ applied, and only that; checkout makes it so"
+    fi
 
     # The resolved feature tree, not a comment's word for it -- INVERTED on
     # deep_filter, the crate whose features pick the model. A forward tree

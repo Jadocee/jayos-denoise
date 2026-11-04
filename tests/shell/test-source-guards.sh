@@ -13,7 +13,7 @@
 # a file this tree ships being absent is a defect in the tree, not a tool the
 # machine lacks.
 #
-# The six guards, each with its reason where it runs:
+# The seven guards, each with its reason where it runs:
 #
 #   1. src/jayos-denoise reads no settings.
 #   2. Never the global bypass, never the command line's -b or -l, never
@@ -25,6 +25,8 @@
 #      the dependencies, no release-lto, no `| grep -q` (nor in the engine or
 #      the library, which run under the same pipefail).
 #   6. packaging/arch/PKGBUILD runs no cargo of its own.
+#   7. packaging/patches/ changes the plugin's code and tests and nothing
+#      else, and each patch gives its reason and is named in the document.
 #
 # Guard 2 overlaps tests/shell/test-engine.sh's "what the code never does",
 # which strips whole-line comments only; this one strips trailing ones too and
@@ -405,6 +407,59 @@ else
     else
         bad "_steps could not be found running packaging/steps.sh; the functions' calls examined nothing"
     fi
+fi
+
+# ── 7. the patches change the plugin's code and tests, and nothing else ─────
+#
+# WHY. steps.sh proves which model is inside the .so from the resolved
+# feature tree and from the .so's own bytes, and pins every dependency with
+# --locked and --frozen; a patch is applied before all of it. One that
+# touched a Cargo.toml could turn the low-latency model back on or add a
+# crate, one that touched Cargo.lock would move what --locked pins with no
+# proof noticing, and one that touched models/ would change the tarball the
+# .so is compared against. So a patch may change files under ladspa/src/ and
+# ladspa/tests/ -- the plugin and its tests -- and no other. And each says
+# why in its own header, a Subject: line as git format-patch writes one, and
+# docs/DEEPFILTERNET.md names it: the document says what the plugin is, and a
+# patch it did not name would be a plugin it does not describe. A tree with
+# no patch fails here, because then this guard examined nothing; whoever
+# removes the last patch removes this guard with it.
+echo
+echo "packaging/patches/: the plugin's code and tests, and nothing else"
+DOC="$ROOT/docs/DEEPFILTERNET.md"
+PATCH_FILES=()
+for p in "$ROOT"/packaging/patches/*.patch; do
+    [[ -f "$p" ]] && PATCH_FILES+=("$p")
+done
+# One name per line, for the lines that list what a patch touched.
+joined() { awk 'NR > 1 { printf "," } { printf "%s", $0 } END { print "" }'; }
+if (( ${#PATCH_FILES[@]} == 0 )); then
+    bad "packaging/patches/ holds no patch; this guard examined nothing"
+else
+    for p in "${PATCH_FILES[@]}"; do
+        name=${p##*/}
+        touched=$(sed -n -E 's|^diff --git a/([^ ]+) b/.*$|\1|p; s|^\+\+\+ b/(.*)$|\1|p' "$p" | awk '!seen[$0]++')
+        if [[ -z "$touched" ]]; then
+            bad "$name names no file; it is no patch git apply would read"
+            continue
+        fi
+        outside=$(grep -vE '^ladspa/(src|tests)/' <<<"$touched") || true
+        if [[ -z "$outside" ]]; then
+            pass "$name changes only $(joined <<<"$touched")"
+        else
+            bad "$name changes what no patch may: $(joined <<<"$outside")"
+        fi
+        if grep -qE '^Subject: .+' "$p"; then
+            pass "$name says what it does in a Subject: line"
+        else
+            bad "$name has no Subject: line; git format-patch writes one, with the reason under it"
+        fi
+        if [[ -f "$DOC" ]] && grep -qF "$name" "$DOC"; then
+            pass "docs/DEEPFILTERNET.md names $name"
+        else
+            bad "docs/DEEPFILTERNET.md does not name $name"
+        fi
+    done
 fi
 
 echo

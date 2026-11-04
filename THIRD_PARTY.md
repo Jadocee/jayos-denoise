@@ -14,8 +14,10 @@ matters for what a reader may do with each:
   code relies on. Facts are cited, not copied; no code from these projects is
   in this repository.
 
-No file here is vendored from another project. The code and documents that
-did not start here came from JayOS, last section.
+No file here is vendored from another project. One is a change to another
+project's file: `packaging/patches/0001-ladspa-hold-headroom-above-the-host-quantum.patch`,
+whose context lines quote the fork's `ladspa/src/lib.rs` (next section). The
+code and documents that did not start here came from JayOS, last section.
 
 ## ismailivanov/DeepFilterNetPlus (MIT OR Apache-2.0) -- built, not vendored
 
@@ -28,7 +30,16 @@ one crate, `deep-filter-ladspa` (`ladspa/`), with `libDF` (the `deep_filter`
 crate) under it, and the full DeepFilterNet 3 model,
 `models/DeepFilterNet3_onnx.tar.gz` -- three ONNX graphs and a `config.ini`
 -- embedded in the `.so` with `include_bytes!`. makepkg clones the fork and
-`packaging/steps.sh` builds it; nothing of it is in this repository.
+`packaging/steps.sh` builds it, after applying `packaging/patches/` to it.
+
+The patch is the one part of the fork in this repository: a unified diff of
+`ladspa/src/lib.rs`, whose unchanged context lines -- three around each
+change, as git writes them -- are the fork's code, quoted so that `git apply`
+can find where each change goes. The changed lines are this package's. The
+patched file is the fork's file modified, so the patch is offered on the
+fork's terms, MIT OR Apache-2.0 at the user's option, as the fork's
+`LICENSE` below asks of a contribution; it is not under this repository's
+MIT alone. It was written on 2026-10-17 against the pin.
 
 The fork's `LICENSE`, `LICENSE-MIT` and `LICENSE-APACHE` are installed with
 the package, under `/usr/share/licenses/jayos-denoise/DeepFilterNetPlus/`

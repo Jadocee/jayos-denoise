@@ -37,7 +37,7 @@
 # diff nobody can read.
 
 pkgname=jayos-denoise
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc="Microphone noise suppression for EasyEffects: DeepFilterNet 3 with the full model, and the command that switches it"
 arch=('x86_64')

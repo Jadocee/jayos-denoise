@@ -858,9 +858,9 @@ numbers() {
            | map(. + 0 | tostring) | join(" ")' <<<"$1"
 }
 declare -A EXPECT=(
-    [gentle]="24 -15 30 20 0 0.02"
-    [balanced]="70 -15 30 20 0 0.02"
-    [maximum]="100 -15 35 35 0 0.05"
+    [gentle]="24 -15 30 20 2 0.02"
+    [balanced]="70 -15 30 20 2 0.02"
+    [maximum]="100 -15 35 35 2 0.05"
 )
 for s in gentle balanced maximum; do
     OUT=$(run "$ENGINE" preset "$s" 2>&1); STATUS=$?
@@ -1658,7 +1658,7 @@ log_lacks "having started nothing" "setsid"
 # table moved here with the engine.) A missing doc is a defect in the tree,
 # not something this machine lacks, so it fails: it was once an uncounted
 # note, and the comparison silently did not happen.
-arm_numbers() { # arm_numbers <name> -> "24 -15 30 20 0 0.02"
+arm_numbers() { # arm_numbers <name> -> "24 -15 30 20 2 0.02"
     grep -E "^\s*$1\)" <<<"$ARMS" | head -1 \
         | grep -oE '=-?[0-9]+(\.[0-9]+)?' | tr -d '=' \
         | sed -E 's/^(-?[0-9]+)\.0+$/\1/' | tr '\n' ' ' | sed 's/ $//'
