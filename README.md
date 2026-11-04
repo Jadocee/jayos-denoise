@@ -18,9 +18,23 @@ pinned commit in a sandbox with no sound server on 2026-10-03, and
 and the low-latency one not, and the fork's three tests passing. On
 2026-10-17 it was built again, with and without the patch, and both were
 driven by a LADSPA host paced the way PipeWire paces a filter
-(`docs/DEEPFILTERNET.md`, *Dropouts*). makepkg, pacman and a real EasyEffects
-have not run. `docs/DEEPFILTERNET.md` says which of its numbers were measured
-and which were read.
+(`docs/DEEPFILTERNET.md`, *Dropouts*). On 2026-11-04 both recipes ran under
+makepkg -- pacman 6.0.2's, Ubuntu's build, with Arch's flags in its
+`makepkg.conf`, so not Arch's makepkg 7 -- and pacman 6.0.2 installed each
+package into a scratch root: 24 files, which `pacman -Qkk` found whole, and
+the two plugins byte for byte the same, the full model inside, the
+low-latency one not, and the patch's log line in it. The installed plugin
+then ran in such a host for a minute at each of two quanta, at the balanced
+preset, over the fork's `assets/clean_freesound_33711.wav` mixed at 0 dB SNR
+with its `assets/noise_freesound_2530.wav`: about 26 dB less noise in the
+speech's pauses, the speech 1.2 dB quieter, and SI-SDR from 0.0 dB to 9.0.
+At a quantum of 1024 it primed 50.7 ms and never underran, where 1.0.0's
+plugin, built from `main` that day without the patch, lost a quantum to
+silence 23 seconds in and moved its delay from 31 ms to 53. At 256 it had
+one overload episode, 1.4 seconds after it started, and none after it.
+Arch's makepkg and pacman, and a real EasyEffects, have not run.
+`docs/DEEPFILTERNET.md` says which of its numbers were measured and which
+were read.
 
 ## What is here
 
