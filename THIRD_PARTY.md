@@ -14,9 +14,12 @@ matters for what a reader may do with each:
   code relies on. Facts are cited, not copied; no code from these projects is
   in this repository.
 
-No file here is vendored from another project. One is a change to another
-project's file: `packaging/patches/0001-ladspa-hold-headroom-above-the-host-quantum.patch`,
-whose context lines quote the fork's `ladspa/src/lib.rs` (next section). The
+No file here is vendored from another project. Two are changes to another
+project's files: `packaging/patches/0001-ladspa-hold-headroom-above-the-host-quantum.patch`
+and `packaging/patches/0002-ladspa-stop-and-join-the-worker-on-drop.patch`,
+whose context lines quote the fork's `ladspa/src/lib.rs` (next section); the
+second also adds a test of this package's, `ladspa/tests/worker_exits.rs`, to
+the fork's tree. The
 code and documents that did not start here came from JayOS, last section.
 
 ## ismailivanov/DeepFilterNetPlus (MIT OR Apache-2.0) -- built, not vendored
