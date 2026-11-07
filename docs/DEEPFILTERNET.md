@@ -12,8 +12,9 @@ with its reason in its header; `strength_params()` in `src/jayos-denoise`
 holds the numbers behind each strength, and `tests/shell/test-engine.sh`
 fails unless the table under *Strength* states them.
 
-This preface is current on 2026-10-04, and *Dropouts, and the headroom that
-stops them*, after it, on 2026-10-17. Everything after those two MOVED HERE from
+This preface is current on 2026-10-04, *Dropouts, and the headroom that
+stops them*, after it, on 2026-10-17, and *The worker thread, ended with its
+instance*, after that, on 2026-11-07. Everything after those two MOVED HERE from
 jayos when the engine and the plugin did, verbatim, from `docs/AUDIO.md` at
 jayos commit `bf53d6a`: that file's lines 347-864, less what is marked
 `[...]` -- lines 596-641, 663-742, 782, 800-804, and 836 through the first
@@ -217,6 +218,49 @@ the 256 and 1024 rows RUN, as the plugin's own `Holding` lines:
 The fork's figures are its best case: each underrun moved them up, by a
 quantum at a time, until a trim brought them back.
 
+## The worker thread, ended with its instance
+
+`packaging/patches/0002-ladspa-stop-and-join-the-worker-on-drop.patch`, on
+top of the first. Each instance of the plugin runs its model in a worker
+thread, which polls the instance's input queue every half millisecond
+(`sleep_duration` in `get_worker_fn`, `ladspa/src/lib.rs` at the pin, READ).
+As the fork ships it, that loop has no way out, and the instance keeps the
+thread's `JoinHandle` only to drop it, which detaches the thread. So an
+instance the host destroys leaves its worker polling, with its model in
+memory, for the rest of the host's life -- and still running the library's
+code if the host unloads the library, as EasyEffects does when it destroys its
+LADSPA wrapper (`LadspaWrapper::~LadspaWrapper`, `src/ladspa_wrapper.cpp` at
+v8.3.2, READ). EasyEffects stopped destroying this plugin's instances when it
+unlinks them for that reason (*Off means bypassed, not removed*, below), but a
+preset without the plugin, or a change of model, still destroys one.
+
+The patch gives the worker a flag it checks once a turn of its loop, and the
+instance a `Drop` that sets the flag and joins the worker, so cleanup()
+returns with the thread gone. It waits at most one poll sleep, or the frame
+being processed. Its test, `ladspa/tests/worker_exits.rs`, is a binary of its
+own so that nothing else starts or ends a thread while it counts
+`/proc/self/task`, and makes and drops a mono and a stereo instance three
+times each after a first.
+
+RUN on 2026-11-07, in a sandbox with no sound server. The test failed on the
+first round over the pin with the first patch alone ("mono, round 1: the
+worker outlived its plugin"), and passed with the second, in 2.7 s. A host
+written in C for the purpose instantiated, activated, deactivated and cleaned
+up the stereo instance five times without a run(), and read its own threads,
+resident memory and CPU over two idle seconds:
+
+| | threads | resident | CPU, two idle seconds |
+|---|---:|---:|---:|
+| before any instance | 1 | 4 MB | 0 |
+| one live instance, either build | 2 | 40-42 MB | 0.065-0.069 s |
+| after five cleanups, 1.0.1 | 6 | 130 MB | 0.277 s |
+| after five cleanups, with 0002 | 1 | 27 MB | 0 |
+
+The 27 MB is the allocator keeping what the models used, not a sixth of the
+leak: it did not grow from the first cleanup to the fifth. A live instance
+still costs about 3% of a core polling, bypassed or not; that is the fork's
+design, and not this patch's to change.
+
 ## Noise suppression on the microphone
 
 ### What DeepFilterNet 3 is
@@ -410,7 +454,13 @@ Off is `"bypass": true` inside the same preset, still loaded — never a preset
 without the plugin. EasyEffects' own `deepfilternet.cpp` keeps its
 `clear_data()` disabled because the plugin "does not seem to destroy its
 threads properly", citing a comment on wwmm/easyeffects#4652; flipping bypass
-leaves the instance alive and idle.
+leaves the instance alive and idle. That was the plugin's defect, and since
+2026-11-07 this package's second patch ends the thread with its instance
+(*The worker thread, ended with its instance*, above); bypassing is still
+right, for the instance it keeps: a model reloaded at every switch is about
+290 ms of the microphone passed through unfiltered while it builds (RUN on
+2026-11-07: five instantiations of the full model in that sandbox, 284.5 to
+294.8 ms each, by the plugin's own "Initialized plugin" line).
 So `denoise.sh set off` rewrites `denoise.json` with the plugin bypassed and
 reloads it when a running instance holds `denoise`, and `set on` flips it
 back.
