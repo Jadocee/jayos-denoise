@@ -1,9 +1,17 @@
-# jayos-denoise
+# jayos-audio
 
-Noise suppression for a microphone on Linux: DeepFilterNet 3, built with its
-full model as the LADSPA plugin EasyEffects loads, and `jayos-denoise`, the
-command that writes EasyEffects' input preset for it and switches it on and
-off. Built for [JayOS](https://github.com/Jadocee/jayos); usable without it.
+The audio engine JayOS's shell drives: noise suppression on the microphone --
+DeepFilterNet 3 with its full model, as a LADSPA plugin in a PipeWire
+filter-chain that a process of its own hosts -- real time for PipeWire's
+clients from rtkit, and the floor under a call's recording cycle. Built for
+[JayOS](https://github.com/Jadocee/jayos); usable without it.
+
+Until 2.0.0 this was jayos-denoise, which filtered the microphone as an
+EasyEffects input preset. With EasyEffects' Effects switch on, the microphone
+ran in the one thread that also runs every output effect, and lagged and cut
+out in calls; `docs/AUDIO.md`, *Why the microphone left EasyEffects*, has the
+diagnosis and the two projects it drew on. The package replaces and provides
+jayos-denoise, and a `jayos-denoise` command takes 1.x's verbs.
 
 The plugin is the DeepFilterNet Plus fork at a pinned commit with two
 patches of this package's. One stops it cutting the microphone out: as the
@@ -12,11 +20,19 @@ and it ran with 0.7 ms to be late by. The other ends each instance's worker
 thread with the instance, which the fork leaves polling, with its model in
 memory, for the rest of the host's life.
 
-Nothing here has run on an Arch machine, and nothing has been listened to.
-The engine is tested against a fake EasyEffects 8.2.9 that plays the daemon's
-end of its socket (`tests/shell/test-engine.sh`). The plugin was built at the
-pinned commit in a sandbox with no sound server on 2026-10-03, and
-`packaging/steps.sh check` passed over it: the full model inside the `.so`
+Nothing here has run on an Arch machine, in a call, or with a person
+listening. 2.0.0's host ran on 2026-11-11 under PipeWire 1.0.5 and
+WirePlumber 0.4.17 in a container with no sound card
+(`tests/shell/test-host.sh`): linked to the microphone it was told, made the
+default input, moved and restrengthened live, white noise 41.8 dB quieter
+through it, and the microphone the default again when it stopped; over a
+speech recording at 0 dB SNR, 22.7 dB less noise in the pauses and SI-SDR
+from 0.3 dB to 6.1. WirePlumber 0.5, which Arch ships, and rtkit have not run;
+`docs/AUDIO.md` draws the line. What ran before 2.0.0, with EasyEffects or a
+host paced like PipeWire as the plugin's host:
+
+The plugin was built at the pinned commit in a sandbox with no sound server
+on 2026-10-03, and `packaging/steps.sh check` passed over it: the full model inside the `.so`
 and the low-latency one not, and the fork's three tests passing. On
 2026-10-17 it was built again, with and without the patch, and both were
 driven by a LADSPA host paced the way PipeWire paces a filter
@@ -49,14 +65,18 @@ numbers were measured and which were read.
 
 | | |
 |---|---|
-| `src/jayos-denoise` | The engine. Writes one input preset, `denoise`, from a strength name, and asks the running EasyEffects to load it and believes the load only when EasyEffects answers that it holds it. Off is the same preset with the filter bypassed. Knows nothing about whether noise suppression should be on: whatever draws the switch says. |
-| `src/easyeffects-lib.sh` | Where EasyEffects 8.x keeps its presets and settings, and how to speak to its socket. A copy of JayOS's; its header names the commit to diff against and the two edits. |
+| `src/jayos-audio` | The engine. `denoise on`, `off`, `strength`, `input` and `status` drive the noise-suppression host; `denoise host` is the host, which writes its filter-chain configuration and execs `pipewire -c` on it; `floor` puts the recording floor into effect; `realtime` says how PipeWire's processes are scheduled. Knows nothing about whether noise suppression should be on: whatever draws the switch says. Its header says why each part is the way it is. |
+| `src/jayos-denoise` | 1.x's verbs -- `status`, `strengths`, `preset`, `set on\|off`, `apply` -- handed to the engine, for what still calls them. |
+| `src/easyeffects-lib.sh` | Where EasyEffects 8.x keeps its presets and settings, and how to speak to its socket: used only to bypass the input preset 1.x left. A copy of JayOS's; its header names the commit to diff against and the two edits. |
+| `systemd/jayos-audio-denoise.service` | The host's user unit. `denoise on` enables and starts it, `off` stops and disables it. |
+| `share/` | The drop-ins the package installs under `/usr/share`: module-rt's portal path off for every native and JACK client, the floor under a PulseAudio client's recording cycle, and the soft mixer for ALSA cards. Each says why in its header. |
 | `packaging/steps.sh` | The steps both recipes call: check the pinned commit out and patch it, fetch locked, build with the full model, prove what was built, run the fork's tests, install. Every build flag and the file list are here, once. |
 | `packaging/patches/` | This package's changes to the plugin, applied in name order onto the pin: two today. 0001 holds a headroom of delay above what the host's quantum needs, set up before the first sample, so a late frame of inference is absorbed instead of heard; 0002 stops and joins an instance's worker thread when the host destroys the instance. Each patch's header says why; `steps.sh check` proves the tree it built from carries them. |
 | `packaging/arch/PKGBUILD` | Builds and installs this checkout. Its `_commit=` line is the plugin's pin, for both recipes. |
-| `contract/` | What JayOS tests its side against: the engine's commands, its status keys, the strengths, every preset it writes, the names a desktop writes into its own code, and `steps.sh`'s verbs. Generated; see `contract/README.md`. |
-| `docs/DEEPFILTERNET.md` | Why this fork, why it is patched, why `--no-default-features`, what each strength sets, what a build costs, and what to check on a machine. Mostly moved, verbatim, from JayOS. |
-| `tests/shell/` | The engine against a fake EasyEffects (`test-engine.sh`); the recipe and the steps against fakes (`test-packaging.sh`, `test-steps.sh`); `tools/contract.sh` and `tools/check.sh` against scratch copies of this tree (`test-contract.sh`); and properties of the code that no behavioural test can hold (`test-source-guards.sh`). |
+| `contract/` | What JayOS tests its side against: both commands' forms, the status keys, the strengths, the host configuration for each, the names a desktop writes into its own code, and `steps.sh`'s verbs. Generated; see `contract/README.md`. |
+| `docs/AUDIO.md` | The microphone's path in 2.0.0: why it left EasyEffects, the host, real time, the floor, and what has run. |
+| `docs/DEEPFILTERNET.md` | Why this fork, why it is patched, why `--no-default-features`, what each strength sets, what a build costs. Mostly moved, verbatim, from JayOS; history where it describes 1.x's EasyEffects preset. |
+| `tests/shell/` | The engine against stand-ins for systemd's user manager and PipeWire's tools (`test-engine.sh`); the host under a real PipeWire and WirePlumber (`test-host.sh`); the floor against stand-ins and under a real pipewire-pulse (`test-floor.sh`); the recipe and the steps against fakes (`test-packaging.sh`, `test-steps.sh`); `tools/contract.sh` and `tools/check.sh` against scratch copies of this tree (`test-contract.sh`); and properties of the code that no behavioural test can hold (`test-source-guards.sh`). |
 | `tools/check.sh` | Everything above that needs no Rust toolchain, in one run. |
 | `tools/contract.sh` | Compares `contract/` with what the code produces; `--write` rewrites it. |
 | `VERSION` | The package's version, which the checkout recipe's `pkgver` repeats. |
@@ -70,46 +90,52 @@ On Arch, from a checkout:
 That clones the DeepFilterNet Plus fork at the pinned commit, fetches its
 crates, builds the plugin, checks it and installs:
 
-    /usr/bin/jayos-denoise                       a link to the engine
-    /usr/lib/jayos-denoise/jayos-denoise         the engine
-    /usr/lib/jayos-denoise/easyeffects-lib.sh    its library
-    /usr/lib/ladspa/libdeep_filter_ladspa.so     the plugin, with the full model
-    /usr/share/jayos-denoise/contract/           contract/
-    /usr/share/licenses/jayos-denoise/           LICENSE, THIRD_PARTY.md, and
-                                                 DeepFilterNetPlus/ with the fork's three
-    /usr/share/doc/jayos-denoise/                README.md and DEEPFILTERNET.md
+    /usr/bin/jayos-audio, /usr/bin/jayos-denoise       links to the two commands
+    /usr/lib/jayos-audio/                              jayos-audio, jayos-denoise,
+                                                       easyeffects-lib.sh, VERSION
+    /usr/lib/ladspa/libdeep_filter_ladspa.so           the plugin, with the full model
+    /usr/lib/systemd/user/jayos-audio-denoise.service  the host's unit
+    /usr/share/pipewire/client.conf.d/60-jayos-audio-rt.conf
+    /usr/share/pipewire/jack.conf.d/60-jayos-audio-rt.conf
+    /usr/share/pipewire/pipewire-pulse.conf.d/60-jayos-capture-latency.conf
+    /usr/share/wireplumber/wireplumber.conf.d/50-alsa-soft-mixer.conf
+    /usr/share/jayos-audio/contract/                   contract/
+    /usr/share/licenses/jayos-audio/                   LICENSE, THIRD_PARTY.md, and
+                                                       DeepFilterNetPlus/ with the fork's three
+    /usr/share/doc/jayos-audio/                        README.md, AUDIO.md and DEEPFILTERNET.md
 
 The build needs `cargo` (from `rust` or `rustup`) and `git`, and the network
 for the clone and the fetch and nothing after them. Measured once, in that
 sandbox: five minutes to build, two more to check, and a 1.1 GB build tree.
+At run time it needs PipeWire, WirePlumber, rtkit, systemd's user manager and
+jq; EasyEffects and pipewire-pulse are optional, and `pactl` is what `floor`
+asks whether anything is streaming.
 
-JayOS carries a recipe of its own, `pkgbuilds/jayos-denoise/PKGBUILD` there,
+JayOS carries a recipe of its own, `pkgbuilds/jayos-audio/PKGBUILD` there,
 that fetches this repository's `main` branch and calls the same
-`packaging/steps.sh`, and its volume popup offers to build it when it is not
-installed.
+`packaging/steps.sh`.
 
-The package provides and conflicts on `libdeep_filter_ladspa`, the name the
-AUR's three packagings of the plugin provide -- `deepfilternet-plus-bin`,
-`deepfilternet-plus-git` and `deepfilternet-plugin-pipewire-bin` -- and so did
-`deepfilternet-ladspa`, the recipe JayOS carried before this package. So it
-cannot be installed beside any of them, and pacman asks before it removes the
-one that is. They would all put the same file in `/usr/lib/ladspa`.
+The package replaces jayos-denoise, so pacman offers it in 1.x's place at
+the next upgrade, and provides and conflicts on `libdeep_filter_ladspa`, the
+name the AUR's three packagings of the plugin provide --
+`deepfilternet-plus-bin`, `deepfilternet-plus-git` and
+`deepfilternet-plugin-pipewire-bin` -- and so did `deepfilternet-ladspa`, the
+recipe JayOS carried before jayos-denoise. So it cannot be installed beside
+any of them, and pacman asks before it removes the one that is. They would
+all put the same file in `/usr/lib/ladspa`.
 
 Without JayOS:
 
-    jayos-denoise set on balanced    # write the preset, start EasyEffects if needed, load it
-    jayos-denoise set off            # the same preset, the filter bypassed
-    jayos-denoise status | jq .      # what is installed, running and loaded
-    jayos-denoise strengths          # gentle, balanced, maximum
+    jayos-audio denoise on balanced     # filter the default microphone; its output is the default input
+    jayos-audio denoise input alsa_input.usb-...  # record another microphone
+    jayos-audio denoise strength maximum          # live, while it runs
+    jayos-audio denoise off             # the microphone is the default input again
+    jayos-audio denoise status | jq .
+    jayos-audio floor apply             # put the recording floor into effect
+    jayos-audio realtime                # which audio threads run real time
 
-A strength left out is balanced. `set on` replaces whatever input preset is
-loaded, and says what it replaced. And after whatever starts EasyEffects at
-login, run `jayos-denoise apply on balanced`, or `apply off`: `apply` never
-starts EasyEffects, waits up to twenty seconds for the instance something
-else starts, and leaves an input preset loaded by hand alone unless given
-`--force`. It is not optional for off. EasyEffects restores its pipeline from
-its own database at start, so an off chosen while it was not running is
-undone at the next start unless `apply off` follows it.
+A strength left out is the one last set, or balanced. The unit stays enabled
+while it is on, so the host comes back at every login.
 
 ## Checking
 
@@ -117,15 +143,15 @@ undone at the next start unless `apply off` follows it.
 
 Parses every script, compares `contract/` with what the code produces, and
 runs every suite in `tests/shell/`. Exit 0 is: everything that ran passed.
-A case a suite could not ask on this machine -- the remedy printed with
-`LADSPA_PATH` unset, where the plugin is installed, say -- leaves it at 0,
-but is named in the summary under its suite, and the last line counts it
-rather than ending on the bare `ok, nothing to fix` a run that asked
-everything prints. 1 is a failure. 2 is "could not run" (no jq, python3,
-socat, git, gzip, tar, od or cmp, or no Unix socket to bind) -- which is not
-the same answer as clean and is not reported as one. It builds nothing: the
-plugin's proofs are `packaging/steps.sh check`, which makepkg runs as the
-recipe's `check()`.
+A case a suite could not run on this machine -- the boxes under a real
+PipeWire where PipeWire, WirePlumber or pipewire-pulse is not installed, or
+the host's where no plugin is built (`JAYOS_AUDIO_TEST_PLUGIN` names a
+build's) -- leaves it at 0, but is named in the summary under its suite, and
+the last line counts it rather than ending on the bare `ok, nothing to fix`
+a run that asked everything prints. 1 is a failure. 2 is "could not run" (no
+jq, git, gzip, tar, od or cmp) -- which is not the same answer as clean and
+is not reported as one. It builds nothing: the plugin's proofs are
+`packaging/steps.sh check`, which makepkg runs as the recipe's `check()`.
 
 ## Licence
 

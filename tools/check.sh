@@ -85,10 +85,10 @@ scripts() {
     # prints "false", and ls-files there lists nothing.
     if [[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" == true ]]; then
         git ls-files --cached --others --exclude-standard \
-            '*.sh' 'src/jayos-denoise' 'packaging/arch/PKGBUILD'
+            '*.sh' 'src/jayos-audio' 'src/jayos-denoise' 'packaging/arch/PKGBUILD'
     else
         find . -path ./packaging/arch/src -prune -o -type f \
-            \( -name '*.sh' -o -path ./src/jayos-denoise -o -path ./packaging/arch/PKGBUILD \) -print
+            \( -name '*.sh' -o -path ./src/jayos-audio -o -path ./src/jayos-denoise -o -path ./packaging/arch/PKGBUILD \) -print
     fi
 }
 

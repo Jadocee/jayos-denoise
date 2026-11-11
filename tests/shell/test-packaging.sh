@@ -79,10 +79,10 @@ else
     bad "its functions are '$fns'; this suite runs prepare, build, check and package and knows of no others"
 fi
 
-if [[ "$(recipe 'printf %s "$pkgname"')" == "jayos-denoise" ]]; then
-    pass "pkgname is jayos-denoise"
+if [[ "$(recipe 'printf %s "$pkgname"')" == "jayos-audio" ]]; then
+    pass "pkgname is jayos-audio"
 else
-    bad "pkgname is '$(recipe 'printf %s "$pkgname"')', not jayos-denoise"
+    bad "pkgname is '$(recipe 'printf %s "$pkgname"')', not jayos-audio"
 fi
 
 # THE VERSION IS VERSION's. Written out rather than computed -- the recipe
@@ -452,10 +452,16 @@ commands_of() {
     awk -v keywords="$(compgen -k | tr '\n' ' ')" -v builtins="$(compgen -b | tr '\n' ' ')" \
         "$COMMANDS_AWK" "$@" | sort -u
 }
-FOUND=$(cd "$ROOT" && commands_of src/jayos-denoise src/easyeffects-lib.sh)
+FOUND=$(cd "$ROOT" && commands_of src/jayos-audio src/jayos-denoise src/easyeffects-lib.sh)
 RUNS=$(sed -n 's/^run //p' <<<"$FOUND")
 PROBES=$(sed -n 's/^probe //p' <<<"$FOUND")
-DYNAMIC=$(sed -n 's/^dynamic //p' <<<"$FOUND")
+# jayos-denoise runs the engine beside it as "$ENGINE": the package's own file,
+# which needs no package of its own. Any other expansion as a command word is
+# one no row can be named for.
+DYNAMIC=$(sed -n 's/^dynamic //p' <<<"$FOUND" | while IFS=: read -r f n; do
+    [[ "$f" == src/jayos-denoise ]] && sed -n "${n}p" "$ROOT/$f" | grep -qF 'exec "$ENGINE"' && continue
+    printf '%s:%s\n' "$f" "$n"
+done)
 
 # command, the package that installs it, and how the recipe declares it:
 # depends; optdepends (and probed with `command -v` before it is run, so the
@@ -465,25 +471,46 @@ DYNAMIC=$(sed -n 's/^dynamic //p' <<<"$FOUND")
 # runs, so the table cannot keep a package alive after its reason is gone.
 read -r -d '' TOOLS <<'TABLE'
 awk          gawk         depends
-basename     coreutils    depends
 cat          coreutils    depends
+cut          coreutils    depends
+date         coreutils    depends
 dirname      coreutils    depends
 easyeffects  easyeffects  optdepends
 grep         grep         depends
+head         coreutils    depends
 id           coreutils    depends
 jq           jq           depends
 mkdir        coreutils    depends
 mktemp       coreutils    depends
 mv           coreutils    depends
+pactl        libpulse     optdepends
+paste        coreutils    depends
 pgrep        procps-ng    depends
+pipewire     pipewire     depends
+ps           procps-ng    depends
+pw-cli       pipewire     depends
+pw-dump      pipewire     depends
+pw-metadata  pipewire     depends
 realpath     coreutils    depends
 rm           coreutils    depends
 sed          sed          depends
 setsid       util-linux   depends
+sha256sum    coreutils    depends
 sleep        coreutils    depends
 socat        socat        depends
-systemctl    systemd      probed
+systemctl    systemd      depends
+tail         coreutils    depends
 timeout      coreutils    depends
+tr           coreutils    depends
+TABLE
+
+# Packages the engine needs running rather than runs: no command of theirs is
+# in the code, so the lexer cannot find them, and each is named here with why.
+# A row the recipe does not depend on fails, and so does a depends=() entry
+# that is neither a command's package nor one of these.
+read -r -d '' SERVICES <<'TABLE'
+wireplumber  links the host's capture side to the microphone, and keeps the default input
+rtkit        grants the host and EasyEffects real time; the drop-ins send module-rt to it, not the portal
 TABLE
 
 if [[ -n "$RUNS" ]] && grep -qx jq <<<"$RUNS"; then
@@ -538,13 +565,19 @@ done
 
 # The interpreter: the engine is started by its #! line, so that line's
 # programs are run as surely as anything in its body.
-shebang=$(head -n 1 "$ROOT/src/jayos-denoise")
-if [[ "$shebang" == '#!/usr/bin/env bash' ]]; then
-    NEED[bash]+=" bash(#!)"
-    NEED[coreutils]+=" env(#!)"
-else
-    bad "src/jayos-denoise starts '$shebang', not '#!/usr/bin/env bash'; this suite knows which packages only that line needs"
-fi
+for f in src/jayos-audio src/jayos-denoise; do
+    shebang=$(head -n 1 "$ROOT/$f")
+    if [[ "$shebang" == '#!/usr/bin/env bash' ]]; then
+        NEED[bash]+=" bash(#!)"
+        NEED[coreutils]+=" env(#!)"
+    else
+        bad "$f starts '$shebang', not '#!/usr/bin/env bash'; this suite knows which packages only that line needs"
+    fi
+done
+while read -r pkg why; do
+    [[ -n "$pkg" ]] || continue
+    NEED[$pkg]+=" ($why)"
+done <<<"$SERVICES"
 
 for pkg in $(printf '%s\n' "${!NEED[@]}" | sort); do
     if has depends "$pkg"; then

@@ -336,21 +336,43 @@ check_plugin() { # check_plugin <tree>
         || die "the fork's tests failed"
 }
 
-# What can be said about the engine without EasyEffects: it parses, it knows
-# its strengths, and every preset it would write is JSON. The engine's
-# behaviour against a daemon is tests/shell's, which needs python3 and socat
-# for its fakes -- more than a package build should ask for.
+# What can be said about the engine without PipeWire: the engine, the 1.x
+# command and the library parse, the two commands name the same strengths,
+# and the host configuration written for each is balanced and names the
+# plugin's mono label and the source the desktop records from, with that
+# strength's attenuation. Whether PipeWire loads it is tests/shell/test-host.sh's,
+# which needs a running PipeWire and WirePlumber -- more than a package
+# build should ask for.
+config_balanced() { # config_balanced <text>: brackets balance outside strings and comments
+    awk '
+        { gsub(/"[^"]*"/, ""); sub(/#.*/, "") }
+        { for (i = 1; i <= length($0); i++) {
+              c = substr($0, i, 1)
+              if (c == "{" || c == "[") depth++
+              if (c == "}" || c == "]") { depth--; if (depth < 0) bad = 1 }
+          } }
+        END { exit (bad || depth != 0) }
+    ' <<<"$1"
+}
+
 check_engine() {
-    local s names
+    local s names shim conf atten
+    bash -n "$ROOT/src/jayos-audio" || die "src/jayos-audio does not parse"
     bash -n "$ROOT/src/jayos-denoise" || die "src/jayos-denoise does not parse"
     bash -n "$ROOT/src/easyeffects-lib.sh" || die "src/easyeffects-lib.sh does not parse"
-    names=$("$ROOT/src/jayos-denoise" strengths) || die "jayos-denoise strengths failed"
-    [[ -n "$names" ]] || die "jayos-denoise names no strengths"
+    names=$("$ROOT/src/jayos-audio" denoise strengths) || die "jayos-audio denoise strengths failed"
+    [[ -n "$names" ]] || die "jayos-audio names no strengths"
+    shim=$("$ROOT/src/jayos-denoise" strengths) || die "jayos-denoise strengths failed"
+    [[ "$shim" == "$names" ]] || die "jayos-denoise names other strengths than jayos-audio"
     for s in $names; do
-        "$ROOT/src/jayos-denoise" preset "$s" | jq -e '.input["deepfilternet#0"].bypass == false' >/dev/null \
-            || die "the $s preset is not JSON with the filter on"
-        "$ROOT/src/jayos-denoise" preset "$s" off | jq -e '.input["deepfilternet#0"].bypass == true' >/dev/null \
-            || die "the $s preset, off, is not JSON with the filter bypassed"
+        conf=$("$ROOT/src/jayos-audio" denoise config "$s") || die "the $s configuration could not be written"
+        config_balanced "$conf" || die "the $s configuration's brackets do not balance"
+        grep -Eq '^[[:space:]]*label[[:space:]]+= deep_filter_mono$' <<<"$conf" \
+            || die "the $s configuration does not name deep_filter_mono"
+        grep -Eq '^[[:space:]]*node\.name[[:space:]]+= "jayos_denoise_source"$' <<<"$conf" \
+            || die "the $s configuration does not name jayos_denoise_source"
+        atten=$(sed -n 's/^[[:space:]]*"Attenuation Limit (dB)"[[:space:]]*= \([0-9.]*\)$/\1/p' <<<"$conf")
+        [[ "$atten" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "the $s configuration sets no attenuation"
     done
 }
 
@@ -362,41 +384,58 @@ step_check() {
 }
 
 step_package() {
-    local tree pkgdir lib
+    local tree pkgdir lib share f
     tree=$(tree_arg "${1:-}") || exit 1
     [[ -n "${2:-}" ]] || usage
     pkgdir=$2
-    lib="$pkgdir/usr/lib/jayos-denoise"
+    lib="$pkgdir/usr/lib/jayos-audio"
+    share="$pkgdir/usr/share"
 
-    # /usr/lib/ladspa is on EasyEffects' default search path, so no
-    # LADSPA_PATH needs setting anywhere; the engine's library looks in the
-    # same places. 755 is the mode every shared object under /usr/lib has.
+    # /usr/lib/ladspa is on EasyEffects' default search path and the one the
+    # engine looks in first after /usr/local, so no LADSPA_PATH needs setting
+    # anywhere. 755 is the mode every shared object under /usr/lib has.
     install -Dm755 "$tree/target/release/$SO_NAME" -t "$pkgdir/usr/lib/ladspa/" \
         || die "could not install $SO_NAME; build first"
 
-    # The engine beside its library, and /usr/bin naming it by a relative
-    # link: the engine finds the library through realpath, so the one
-    # directory holds both whichever name it was started by.
-    install -Dm755 "$ROOT/src/jayos-denoise" "$lib/jayos-denoise" || die "could not install the engine"
+    # The engine, the 1.x command beside it, the library it uses to bypass an
+    # EasyEffects preset 1.x left, and VERSION, which `jayos-audio version`
+    # reads beside itself. /usr/bin names the two by relative links: each
+    # finds the others through realpath, whichever name it was started by.
+    install -Dm755 "$ROOT/src/jayos-audio" "$lib/jayos-audio" || die "could not install the engine"
+    install -Dm755 "$ROOT/src/jayos-denoise" "$lib/jayos-denoise" || die "could not install jayos-denoise"
     install -Dm644 "$ROOT/src/easyeffects-lib.sh" "$lib/easyeffects-lib.sh" || die "could not install the library"
+    install -Dm644 "$ROOT/VERSION" "$lib/VERSION" || die "could not install VERSION"
     install -d "$pkgdir/usr/bin" || die "could not make $pkgdir/usr/bin"
-    ln -sfn ../lib/jayos-denoise/jayos-denoise "$pkgdir/usr/bin/jayos-denoise" || die "could not link the engine"
+    ln -sfn ../lib/jayos-audio/jayos-audio "$pkgdir/usr/bin/jayos-audio" || die "could not link the engine"
+    ln -sfn ../lib/jayos-audio/jayos-denoise "$pkgdir/usr/bin/jayos-denoise" || die "could not link jayos-denoise"
+
+    # The noise-suppression host's unit, a user unit, where systemd's user
+    # manager reads a package's own.
+    install -Dm644 "$ROOT/systemd/jayos-audio-denoise.service" -t "$pkgdir/usr/lib/systemd/user/" \
+        || die "could not install the unit"
+
+    # PipeWire's and WirePlumber's drop-ins, in their packages' own
+    # directories: read before /etc and ~/.config, so that a file of a
+    # person's own, at a later name, wins (each file says what it is for).
+    while IFS= read -r f; do
+        install -Dm644 "$ROOT/share/$f" "$share/$f" || die "could not install share/$f"
+    done < <(cd "$ROOT/share" && find . -type f -name '*.conf' | sed 's|^\./||' | LC_ALL=C sort)
 
     # The contract, for a machine that wants to compare what it runs against
     # what a desktop built on this vendored.
-    install -d "$pkgdir/usr/share/jayos-denoise/contract" || die "could not make the contract directory"
-    install -m644 "$ROOT"/contract/* "$pkgdir/usr/share/jayos-denoise/contract/" || die "could not install the contract"
+    install -d "$share/jayos-audio/contract" || die "could not make the contract directory"
+    install -m644 "$ROOT"/contract/* "$share/jayos-audio/contract/" || die "could not install the contract"
 
     # This repository's licence and its account of what came from elsewhere;
     # then the plugin's, which is dual-licensed at the user's option: its
     # LICENSE is the one-paragraph "either, at your option", and the two
     # texts it names go beside it.
-    install -Dm644 "$ROOT/LICENSE" "$ROOT/THIRD_PARTY.md" -t "$pkgdir/usr/share/licenses/jayos-denoise/" \
+    install -Dm644 "$ROOT/LICENSE" "$ROOT/THIRD_PARTY.md" -t "$share/licenses/jayos-audio/" \
         || die "could not install the licence"
     install -Dm644 "$tree/LICENSE" "$tree/LICENSE-MIT" "$tree/LICENSE-APACHE" \
-        -t "$pkgdir/usr/share/licenses/jayos-denoise/DeepFilterNetPlus/" \
+        -t "$share/licenses/jayos-audio/DeepFilterNetPlus/" \
         || die "could not install the plugin's licences"
-    install -Dm644 "$ROOT/README.md" "$ROOT/docs/DEEPFILTERNET.md" -t "$pkgdir/usr/share/doc/jayos-denoise/" \
+    install -Dm644 "$ROOT/README.md" "$ROOT/docs/AUDIO.md" "$ROOT/docs/DEEPFILTERNET.md" -t "$share/doc/jayos-audio/" \
         || die "could not install the documentation"
 }
 

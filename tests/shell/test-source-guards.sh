@@ -15,7 +15,7 @@
 #
 # The seven guards, each with its reason where it runs:
 #
-#   1. src/jayos-denoise reads no settings.
+#   1. src/jayos-audio reads no settings.
 #   2. Never the global bypass, never the command line's -b or -l, never
 #      hide_window.
 #   3. The library's copy has no path back into jayos.
@@ -57,7 +57,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ENGINE="$ROOT/src/jayos-denoise"
+ENGINE="$ROOT/src/jayos-audio"
 LIB="$ROOT/src/easyeffects-lib.sh"
 STEPS="$ROOT/packaging/steps.sh"
 RECIPE="$ROOT/packaging/arch/PKGBUILD"
@@ -91,7 +91,7 @@ read_code() { # read_code <file> <label>
         echo "  $2 is missing" >&2
     fi
 }
-ENGINE_CODE=$(read_code "$ENGINE" src/jayos-denoise)
+ENGINE_CODE=$(read_code "$ENGINE" src/jayos-audio)
 LIB_CODE=$(read_code "$LIB" src/easyeffects-lib.sh)
 STEPS_CODE=$(read_code "$STEPS" packaging/steps.sh)
 RECIPE_CODE=$(read_code "$RECIPE" packaging/arch/PKGBUILD)
@@ -121,7 +121,7 @@ lacks() {
 
 # The engine's dispatch and the library's first request function: what every
 # guard over those two files needs to see before it may say anything.
-ENGINE_ANCHOR='^case "\$\{1:-status\}" in$'
+ENGINE_ANCHOR='^case "\$\{1:-\}" in$'
 LIB_ANCHOR='^ee_installed\(\)'
 
 # ── 1. the engine reads no settings ──────────────────────────────────────────
@@ -141,8 +141,8 @@ LIB_ANCHOR='^ee_installed\(\)'
 # ee_apply_noise_setting is not one), the two keys, and any QS_ variable.
 echo "the engine reads no settings"
 SETTINGS_RE='settings\.(json|sh)|(^|[^[:alnum:]_])setting([[:space:]_]|$)|micDenoise|(^|[^[:alnum:]_])QS_[[:alnum:]_]'
-if found "src/jayos-denoise" "$ENGINE_CODE" "$ENGINE_ANCHOR" "its verb dispatch"; then
-    lacks "src/jayos-denoise" "$ENGINE_CODE" "$SETTINGS_RE" \
+if found "src/jayos-audio" "$ENGINE_CODE" "$ENGINE_ANCHOR" "its verb dispatch"; then
+    lacks "src/jayos-audio" "$ENGINE_CODE" "$SETTINGS_RE" \
         "no code line names settings.json, settings.sh, setting, micDenoise or a QS_ variable"
 fi
 if found "src/easyeffects-lib.sh" "$LIB_CODE" "$LIB_ANCHOR" "ee_installed()"; then
@@ -170,11 +170,11 @@ echo
 echo "never the global bypass, never the command line"
 BYPASS_RE='toggle_global_bypass|(^|[^[:alnum:]_])global_bypass([^[:alnum:]_]|$)|hide_window'
 CLI_RE='(^|[^[:alnum:]_./-])easyeffects([[:space:]]+[^;&|)[:space:]]+)*[[:space:]]+(-[[:alnum:]]*[bl][[:alnum:]]*|--bypass|--load-preset)([[:space:]=]|$)'
-if found "src/jayos-denoise" "$ENGINE_CODE" "$ENGINE_ANCHOR" "its verb dispatch" \
-   && found "src/jayos-denoise" "$ENGINE_CODE" 'ee_load_preset input' "the load it sends through the library"; then
-    lacks "src/jayos-denoise" "$ENGINE_CODE" "$BYPASS_RE" \
+if found "src/jayos-audio" "$ENGINE_CODE" "$ENGINE_ANCHOR" "its verb dispatch" \
+   && found "src/jayos-audio" "$ENGINE_CODE" 'ee_load_preset input' "the load it sends through the library"; then
+    lacks "src/jayos-audio" "$ENGINE_CODE" "$BYPASS_RE" \
         "no code line writes global_bypass, toggle_global_bypass or hide_window"
-    lacks "src/jayos-denoise" "$ENGINE_CODE" "$CLI_RE" \
+    lacks "src/jayos-audio" "$ENGINE_CODE" "$CLI_RE" \
         "no code line runs easyeffects -b, -l, --bypass or --load-preset"
 fi
 if found "src/easyeffects-lib.sh" "$LIB_CODE" '^ee_socket\(\)' "ee_socket(), where every request is written,"; then
@@ -203,8 +203,8 @@ if found "src/easyeffects-lib.sh" "$LIB_CODE" '^ee_ensure_running\(\)' "ee_ensur
     lacks "src/easyeffects-lib.sh" "$LIB_CODE" "$JAYOS_RE" \
         "no code line names ee_apply_noise_setting or denoise.sh"
 fi
-if found "src/jayos-denoise" "$ENGINE_CODE" "$ENGINE_ANCHOR" "its verb dispatch"; then
-    lacks "src/jayos-denoise" "$ENGINE_CODE" "$JAYOS_RE" \
+if found "src/jayos-audio" "$ENGINE_CODE" "$ENGINE_ANCHOR" "its verb dispatch"; then
+    lacks "src/jayos-audio" "$ENGINE_CODE" "$JAYOS_RE" \
         "no code line names ee_apply_noise_setting or denoise.sh"
 fi
 
@@ -230,23 +230,23 @@ LIB_SOURCE_RE='^(source|\.)[[:space:]]+"?\$\{?HERE\}?/easyeffects-lib\.sh"?([[:s
 sources=$(grep -nE "$SOURCE_RE" <<<"$ENGINE_CODE")
 sets=$(grep -nE "$HERE_SET_RE" <<<"$ENGINE_CODE")
 if [[ -z "$sources" ]]; then
-    bad "src/jayos-denoise: a source line could not be found; this check examined nothing"
+    bad "src/jayos-audio: a source line could not be found; this check examined nothing"
 else
     n=$(grep -c . <<<"$sources")
     if (( n == 1 )); then
-        pass "src/jayos-denoise: exactly one code line sources anything"
+        pass "src/jayos-audio: exactly one code line sources anything"
     else
-        bad "src/jayos-denoise: $n code lines source something, where one should"
+        bad "src/jayos-audio: $n code lines source something, where one should"
         show "$sources"
     fi
     if grep -qE "^[0-9]+:[[:space:]]*${LIB_SOURCE_RE#^}" <<<"$sources" && (( n == 1 )); then
         pass "and it is \$HERE/easyeffects-lib.sh"
     else
-        bad "src/jayos-denoise sources something other than \$HERE/easyeffects-lib.sh"
+        bad "src/jayos-audio sources something other than \$HERE/easyeffects-lib.sh"
         show "$sources"
     fi
     if [[ -z "$sets" ]]; then
-        bad "src/jayos-denoise: the HERE assignment could not be found; this check examined nothing"
+        bad "src/jayos-audio: the HERE assignment could not be found; this check examined nothing"
     else
         m=$(grep -c . <<<"$sets")
         here_line=${sets%%:*}
@@ -350,8 +350,8 @@ GREPQ_RE='(^|[^|])\|[[:space:]]*(LC_ALL=[^[:space:]]*[[:space:]]+)?grep([[:space
 if found "packaging/steps.sh" "$STEPS_CODE" '(^|[^[:alnum:]_])nm -D ' "the nm -D read of the dynamic symbols"; then
     lacks "packaging/steps.sh" "$STEPS_CODE" "$GREPQ_RE" "nothing is piped into grep -q"
 fi
-if found "src/jayos-denoise" "$ENGINE_CODE" "$ENGINE_ANCHOR" "its verb dispatch"; then
-    lacks "src/jayos-denoise" "$ENGINE_CODE" "$GREPQ_RE" "nothing is piped into grep -q"
+if found "src/jayos-audio" "$ENGINE_CODE" "$ENGINE_ANCHOR" "its verb dispatch"; then
+    lacks "src/jayos-audio" "$ENGINE_CODE" "$GREPQ_RE" "nothing is piped into grep -q"
 fi
 if found "src/easyeffects-lib.sh" "$LIB_CODE" "$LIB_ANCHOR" "ee_installed()"; then
     lacks "src/easyeffects-lib.sh" "$LIB_CODE" "$GREPQ_RE" "nothing is piped into grep -q"

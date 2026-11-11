@@ -5,8 +5,8 @@
 #   tests/shell/test-steps.sh
 #
 # Exit 0: every case passed. 1: a case failed. 2: could not run -- no git
-# (the checkout cases need a real repository), no jq (check's engine half and
-# the installed engine's status run it), no gzip or tar (the model stand-ins
+# (the checkout cases need a real repository), no jq (the installed engine's
+# status runs it), no gzip or tar (the model stand-ins
 # are real gzip'd tarballs), no od (their first three bytes are read with
 # it, as steps.sh's findable() reads them), or no cmp (each installed file
 # is compared with its source) -- which is not the same answer as "nothing
@@ -90,18 +90,21 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 
 # THE SCRATCH CHECKOUT. Documents and licences are stand-ins with distinct
 # text, so the byte comparisons below also catch one file installed under
-# another's name; README.md and docs/DEEPFILTERNET.md are not real files here
+# another's name; README.md and the two documents are not real files here
 # because this repository's may not exist yet, and package has to fail
 # cleanly without them -- which is one of its cases.
 REPO="$WORK/repo"
 mkdir -p "$REPO/packaging/arch" "$REPO/src" "$REPO/contract" "$REPO/docs"
 cp "$ROOT/packaging/steps.sh" "$REPO/packaging/steps.sh"
-cp "$ROOT/src/jayos-denoise" "$ROOT/src/easyeffects-lib.sh" "$REPO/src/"
+cp "$ROOT/src/jayos-audio" "$ROOT/src/jayos-denoise" "$ROOT/src/easyeffects-lib.sh" "$REPO/src/"
+cp "$ROOT/VERSION" "$REPO/VERSION"
+cp -r "$ROOT/systemd" "$ROOT/share" "$REPO/"
 cp "$ROOT"/contract/* "$REPO/contract/"
 printf 'stand-in: this repository'"'"'s licence\n' > "$REPO/LICENSE"
 printf 'stand-in: third-party notices\n' > "$REPO/THIRD_PARTY.md"
 printf 'stand-in: the readme\n' > "$REPO/README.md"
 printf 'stand-in: the DeepFilterNet document\n' > "$REPO/docs/DEEPFILTERNET.md"
+printf 'stand-in: the audio document\n' > "$REPO/docs/AUDIO.md"
 STEPS="$REPO/packaging/steps.sh"
 PIN_FILE="$REPO/packaging/arch/PKGBUILD"
 
@@ -562,6 +565,7 @@ baseline() {
     cp "$WORK/full.tar.gz" "$PLUG/models/DeepFilterNet3_onnx.tar.gz"
     cp "$WORK/ll.tar.gz" "$PLUG/models/DeepFilterNet3_ll_onnx.tar.gz"
     cp "$WORK/so.full" "$SO"
+    cp "$ROOT/src/jayos-audio" "$REPO/src/jayos-audio"
     cp "$ROOT/src/jayos-denoise" "$REPO/src/jayos-denoise"
     cp "$ROOT/src/easyeffects-lib.sh" "$REPO/src/easyeffects-lib.sh"
 }
@@ -666,23 +670,28 @@ check_tree eval 'printf "101" > "$F/status.test"'
 expect_fail "failing fork tests fail check" "the fork's tests failed"
 
 echo "  -- the engine"
+check_tree eval 'printf "\nif then\n" >> "$REPO/src/jayos-audio"'
+expect_fail "an engine that does not parse fails" "src/jayos-audio does not parse"
 check_tree eval 'printf "\nif then\n" >> "$REPO/src/jayos-denoise"'
-expect_fail "an engine that does not parse fails" "src/jayos-denoise does not parse"
+expect_fail "a 1.x command that does not parse fails" "src/jayos-denoise does not parse"
 check_tree eval 'printf "\nif then\n" >> "$REPO/src/easyeffects-lib.sh"'
 expect_fail "a library that does not parse fails" "src/easyeffects-lib.sh does not parse"
-check_tree eval 'printf "#!/usr/bin/env bash\nexit 0\n" > "$REPO/src/jayos-denoise"'
+check_tree eval 'printf "#!/usr/bin/env bash\nexit 0\n" > "$REPO/src/jayos-audio"'
 expect_fail "an engine that names no strengths fails" "names no strengths"
-check_tree sed -i 's/"bypass": \$2,/"bypass": $2/' "$REPO/src/jayos-denoise"
-expect_fail "a preset that is not JSON fails" "is not JSON with the filter on"
-check_tree sed -i 's/"bypass": \$2,/"bypass": false,/' "$REPO/src/jayos-denoise"
-expect_fail "a preset whose off does not bypass fails" "off, is not JSON with the filter bypassed"
-# The two cases above break the heredoc every strength shares, so a check
-# that looked at the first strength alone would fail them too. This one
-# breaks the last strength's arm and nothing else -- an empty number, so
-# that preset alone is no JSON. RUN against a check_engine narrowed to the
-# first strength: that let it through with exit 0.
-check_tree sed -i 's/^        maximum)  ATTEN=100\.0;/        maximum)  ATTEN=;/' "$REPO/src/jayos-denoise"
-expect_fail "a preset broken for the last strength alone fails, naming it" "the maximum preset is not JSON with the filter on"
+check_tree eval 'printf "#!/usr/bin/env bash\necho gentle\n" > "$REPO/src/jayos-denoise"'
+expect_fail "a 1.x command that names other strengths fails" "names other strengths than jayos-audio"
+check_tree sed -i 's/^                    }$/                    }}/' "$REPO/src/jayos-audio"
+expect_fail "a configuration whose brackets do not balance fails" "brackets do not balance"
+check_tree sed -i 's/label  = deep_filter_mono/label  = deep_filter_stereo/' "$REPO/src/jayos-audio"
+expect_fail "a configuration naming another label fails" "does not name deep_filter_mono"
+check_tree sed -i 's/node.name    = "\$SOURCE"/node.name    = "jayos_denoise"/' "$REPO/src/jayos-audio"
+expect_fail "a configuration naming another source fails" "does not name jayos_denoise_source"
+# The cases above break the text every strength shares, so a check that
+# looked at the first strength alone would fail them too. This one empties
+# the last strength's number and nothing else, so that configuration alone
+# sets no attenuation.
+check_tree sed -i 's/^        maximum)  ATTEN=100\.0;/        maximum)  ATTEN=;/' "$REPO/src/jayos-audio"
+expect_fail "a configuration broken for the last strength alone fails, naming it" "the maximum configuration sets no attenuation"
 
 echo "  -- the patches"
 # The fork's clone as check finds it after checkout: patched, with the models
@@ -732,18 +741,24 @@ expect_ok "package runs"
 # tools/contract.sh is what decides that.
 want=$( {
     printf '%s\n' \
-        "f 755 usr/lib/jayos-denoise/jayos-denoise" \
-        "f 644 usr/lib/jayos-denoise/easyeffects-lib.sh" \
+        "f 755 usr/lib/jayos-audio/jayos-audio" \
+        "f 755 usr/lib/jayos-audio/jayos-denoise" \
+        "f 644 usr/lib/jayos-audio/easyeffects-lib.sh" \
+        "f 644 usr/lib/jayos-audio/VERSION" \
+        "l 777 usr/bin/jayos-audio" \
         "l 777 usr/bin/jayos-denoise" \
+        "f 644 usr/lib/systemd/user/jayos-audio-denoise.service" \
         "f 755 usr/lib/ladspa/libdeep_filter_ladspa.so" \
-        "f 644 usr/share/licenses/jayos-denoise/LICENSE" \
-        "f 644 usr/share/licenses/jayos-denoise/THIRD_PARTY.md" \
-        "f 644 usr/share/licenses/jayos-denoise/DeepFilterNetPlus/LICENSE" \
-        "f 644 usr/share/licenses/jayos-denoise/DeepFilterNetPlus/LICENSE-MIT" \
-        "f 644 usr/share/licenses/jayos-denoise/DeepFilterNetPlus/LICENSE-APACHE" \
-        "f 644 usr/share/doc/jayos-denoise/README.md" \
-        "f 644 usr/share/doc/jayos-denoise/DEEPFILTERNET.md"
-    for f in "$ROOT"/contract/*; do printf 'f 644 usr/share/jayos-denoise/contract/%s\n' "${f##*/}"; done
+        "f 644 usr/share/licenses/jayos-audio/LICENSE" \
+        "f 644 usr/share/licenses/jayos-audio/THIRD_PARTY.md" \
+        "f 644 usr/share/licenses/jayos-audio/DeepFilterNetPlus/LICENSE" \
+        "f 644 usr/share/licenses/jayos-audio/DeepFilterNetPlus/LICENSE-MIT" \
+        "f 644 usr/share/licenses/jayos-audio/DeepFilterNetPlus/LICENSE-APACHE" \
+        "f 644 usr/share/doc/jayos-audio/README.md" \
+        "f 644 usr/share/doc/jayos-audio/AUDIO.md" \
+        "f 644 usr/share/doc/jayos-audio/DEEPFILTERNET.md"
+    (cd "$ROOT/share" && find . -type f -name '*.conf' -printf 'f 644 usr/share/%P\n')
+    for f in "$ROOT"/contract/*; do printf 'f 644 usr/share/jayos-audio/contract/%s\n' "${f##*/}"; done
   } | sort )
 got=$(cd "$PKG" 2>/dev/null && find . ! -type d -printf '%y %m %P\n' | sort)
 if [[ "$got" == "$want" ]]; then
@@ -752,6 +767,17 @@ else
     bad "the package differs from the documented layout:"
     diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | sed -n 's/^[<>]/    &/p'
 fi
+# The drop-ins by name as well: the list above is whatever share/ holds, so
+# a drop-in deleted from share/ would leave it agreeing with itself.
+for f in pipewire/client.conf.d/60-jayos-audio-rt.conf pipewire/jack.conf.d/60-jayos-audio-rt.conf \
+         pipewire/pipewire-pulse.conf.d/60-jayos-capture-latency.conf \
+         wireplumber/wireplumber.conf.d/50-alsa-soft-mixer.conf; do
+    if [[ -f "$PKG/usr/share/$f" ]]; then
+        pass "/usr/share/$f is installed"
+    else
+        bad "/usr/share/$f is not installed"
+    fi
+done
 empty=$(find "$PKG" -mindepth 1 -type d -empty 2>/dev/null)
 if [[ -z "$empty" ]]; then
     pass "and no directory is left empty"
@@ -759,57 +785,58 @@ else
     bad "empty directories in the package: $(oneline "${empty//$PKG\//}")"
 fi
 
-target=$(readlink "$PKG/usr/bin/jayos-denoise")
-if [[ "$target" == "../lib/jayos-denoise/jayos-denoise" ]]; then
-    pass "/usr/bin/jayos-denoise is a relative link to ../lib/jayos-denoise/jayos-denoise"
-else
-    bad "/usr/bin/jayos-denoise points at '$target'"
-fi
-
-# THROUGH THE LINK, which is how JayOS and a person run it. The engine finds
-# its library with realpath, so started as /usr/bin/jayos-denoise it still
-# sources /usr/lib/jayos-denoise/easyeffects-lib.sh. The engine refuses with
-# exit 1 when that source fails, and `strengths` needs nothing from the
-# library -- so stderr has to be empty as well, and `status`, which is all
-# library calls, has to print the contract's keys.
-#
-# With no EasyEffects on the PATH, so status takes the same branch on every
-# machine. NOT by dropping each directory that holds easyeffects: on Arch
-# that is /usr/bin, which holds bash and jq too, and the engine's #! line then
-# found no bash (RUN, with a fake easyeffects overlaid onto /usr/bin in a
-# private mount namespace: "env: 'bash': No such file or directory"). Each
-# such directory is replaced by a directory of links to everything in it but
-# easyeffects -- tools/contract.sh's path_without_easyeffects, for the same
-# reason.
-no_ee_path=""
-n_farm=0
-IFS=: read -ra path_dirs <<<"$PATH"
-for d in "${path_dirs[@]}"; do
-    [[ -n "$d" && -d "$d" ]] || continue
-    if [[ -x "$d/easyeffects" ]]; then
-        n_farm=$((n_farm + 1))
-        farm="$WORK/path-without-easyeffects/$n_farm"
-        mkdir -p "$farm" && ln -s "$d"/* "$farm/" && rm -f "$farm/easyeffects"
-        d=$farm
+for name in jayos-audio jayos-denoise; do
+    target=$(readlink "$PKG/usr/bin/$name")
+    if [[ "$target" == "../lib/jayos-audio/$name" ]]; then
+        pass "/usr/bin/$name is a relative link to ../lib/jayos-audio/$name"
+    else
+        bad "/usr/bin/$name points at '$target'"
     fi
-    no_ee_path+="$d:"
 done
+
+# THROUGH THE LINKS, which is how JayOS and a person run them. Each command
+# finds what sits beside it with realpath, so started by its /usr/bin name
+# the engine still reads /usr/lib/jayos-audio/VERSION and the 1.x command
+# still finds /usr/lib/jayos-audio/jayos-audio. With nothing in the
+# environment but PATH and HOME, so no PipeWire or user manager answers and
+# status takes the same branch on every machine; its keys are what is
+# compared, not its values, which are tests/shell/test-engine.sh's.
 mkdir -p "$WORK/home"
-via_link() { # via_link <verb>: the installed engine, by its /usr/bin name, as nobody in particular
-    env -i PATH="${no_ee_path%:}" HOME="$WORK/home" "$PKG/usr/bin/jayos-denoise" "$@" 2>"$WORK/link.err"
+via_link() { # via_link <name> <verb...>: an installed command, by its /usr/bin name, as nobody in particular
+    local name=$1
+    shift
+    env -i PATH="$PATH" HOME="$WORK/home" "$PKG/usr/bin/$name" "$@" 2>"$WORK/link.err"
 }
-strengths=$(via_link strengths)
-rc=$?
-if (( rc == 0 )) && [[ "$strengths" == "$(grep -v '^#' "$ROOT/contract/strengths.txt")" && ! -s "$WORK/link.err" ]]; then
-    pass "run through the link, the installed engine prints the contract's strengths, and nothing on stderr"
+contract_strengths=$(grep -v '^#' "$ROOT/contract/strengths.txt")
+contract_keys=$(grep -v '^#' "$ROOT/contract/status-keys.txt")
+version=$(via_link jayos-audio version)
+if [[ "$version" == "$(cat "$REPO/VERSION")" && ! -s "$WORK/link.err" ]]; then
+    pass "run through its link, the engine reads its VERSION beside it: $version"
 else
-    bad "through the link, strengths exited $rc, printed '$(oneline "$strengths")', stderr: $(oneline "$(cat "$WORK/link.err")")"
+    bad "through the link, version printed '$(oneline "$version")', stderr: $(oneline "$(cat "$WORK/link.err")")"
 fi
-keys=$(via_link status | jq -r 'keys_unsorted[]' 2>/dev/null)
-if [[ -n "$keys" && "$keys" == "$(grep -v '^#' "$ROOT/contract/status-keys.txt")" && ! -s "$WORK/link.err" ]]; then
-    pass "and status, which is all library calls, answers with the contract's keys"
+for name in jayos-audio jayos-denoise; do
+    if [[ $name == jayos-audio ]]; then verb=(denoise); else verb=(); fi
+    strengths=$(via_link "$name" "${verb[@]}" strengths)
+    rc=$?
+    if (( rc == 0 )) && [[ "$strengths" == "$contract_strengths" && ! -s "$WORK/link.err" ]]; then
+        pass "$name, through its link, prints the contract's strengths and nothing on stderr"
+    else
+        bad "through the link, $name strengths exited $rc, printed '$(oneline "$strengths")', stderr: $(oneline "$(cat "$WORK/link.err")")"
+    fi
+    keys=$(via_link "$name" "${verb[@]}" status | jq -r 'keys_unsorted[]' 2>/dev/null)
+    if [[ -n "$keys" && "$keys" == "$contract_keys" && ! -s "$WORK/link.err" ]]; then
+        pass "and $name's status answers with the contract's keys"
+    else
+        bad "through the link, $name status gave keys '$(oneline "$keys")', stderr: $(oneline "$(cat "$WORK/link.err")")"
+    fi
+done
+# The unit starts the engine where the package put it.
+exec_start=$(sed -n 's/^ExecStart=//p' "$PKG/usr/lib/systemd/user/jayos-audio-denoise.service")
+if [[ "$exec_start" == "/usr/lib/jayos-audio/jayos-audio denoise host" ]]; then
+    pass "the unit starts /usr/lib/jayos-audio/jayos-audio denoise host, where the package puts it"
 else
-    bad "through the link, status gave keys '$(oneline "$keys")', stderr: $(oneline "$(cat "$WORK/link.err")")"
+    bad "the unit starts '$exec_start'"
 fi
 
 # Byte for byte: each installed file is the file it was installed from.
@@ -817,23 +844,30 @@ same() { # same <installed, under PKG> <source> <label>
     if cmp -s "$PKG/$1" "$2"; then pass "$3"; else bad "$3: /$1 is not $2"; fi
 }
 same usr/lib/ladspa/libdeep_filter_ladspa.so "$SO" "the plugin is the built .so"
-same usr/lib/jayos-denoise/jayos-denoise "$REPO/src/jayos-denoise" "the engine is src/jayos-denoise"
-same usr/lib/jayos-denoise/easyeffects-lib.sh "$REPO/src/easyeffects-lib.sh" "its library is src/easyeffects-lib.sh"
-same usr/share/licenses/jayos-denoise/LICENSE "$REPO/LICENSE" "this repository's LICENSE"
-same usr/share/licenses/jayos-denoise/THIRD_PARTY.md "$REPO/THIRD_PARTY.md" "THIRD_PARTY.md"
+same usr/lib/jayos-audio/jayos-audio "$REPO/src/jayos-audio" "the engine is src/jayos-audio"
+same usr/lib/jayos-audio/jayos-denoise "$REPO/src/jayos-denoise" "the 1.x command is src/jayos-denoise"
+same usr/lib/jayos-audio/easyeffects-lib.sh "$REPO/src/easyeffects-lib.sh" "its library is src/easyeffects-lib.sh"
+same usr/lib/jayos-audio/VERSION "$REPO/VERSION" "VERSION"
+same usr/lib/systemd/user/jayos-audio-denoise.service "$REPO/systemd/jayos-audio-denoise.service" "the unit"
+same usr/share/licenses/jayos-audio/LICENSE "$REPO/LICENSE" "this repository's LICENSE"
+same usr/share/licenses/jayos-audio/THIRD_PARTY.md "$REPO/THIRD_PARTY.md" "THIRD_PARTY.md"
 for f in LICENSE LICENSE-MIT LICENSE-APACHE; do
-    same "usr/share/licenses/jayos-denoise/DeepFilterNetPlus/$f" "$PLUG/$f" "the fork's $f"
+    same "usr/share/licenses/jayos-audio/DeepFilterNetPlus/$f" "$PLUG/$f" "the fork's $f"
 done
-same usr/share/doc/jayos-denoise/README.md "$REPO/README.md" "README.md"
-same usr/share/doc/jayos-denoise/DEEPFILTERNET.md "$REPO/docs/DEEPFILTERNET.md" "docs/DEEPFILTERNET.md"
+same usr/share/doc/jayos-audio/README.md "$REPO/README.md" "README.md"
+same usr/share/doc/jayos-audio/DEEPFILTERNET.md "$REPO/docs/DEEPFILTERNET.md" "docs/DEEPFILTERNET.md"
+same usr/share/doc/jayos-audio/AUDIO.md "$REPO/docs/AUDIO.md" "docs/AUDIO.md"
 differs=""
 for f in "$REPO"/contract/*; do
-    cmp -s "$f" "$PKG/usr/share/jayos-denoise/contract/${f##*/}" || differs+=" ${f##*/}"
+    cmp -s "$f" "$PKG/usr/share/jayos-audio/contract/${f##*/}" || differs+=" ${f##*/}"
 done
+while IFS= read -r f; do
+    cmp -s "$REPO/share/$f" "$PKG/usr/share/$f" || differs+=" $f"
+done < <(cd "$REPO/share" && find . -type f -name '*.conf' -printf '%P\n')
 if [[ -z "$differs" ]]; then
-    pass "every contract file is installed byte for byte"
+    pass "every contract file and drop-in is installed byte for byte"
 else
-    bad "contract files missing or different:$differs"
+    bad "contract files or drop-ins missing or different:$differs"
 fi
 
 # What package refuses: each source it needs, missing in turn. A refusal is
@@ -848,9 +882,13 @@ package_without() { # package_without <label> <fragment> <path to hide>
 }
 package_without "no docs/DEEPFILTERNET.md fails, saying so" "could not install the documentation" "$REPO/docs/DEEPFILTERNET.md"
 package_without "no README.md fails, saying so" "could not install the documentation" "$REPO/README.md"
+package_without "no docs/AUDIO.md fails, saying so" "could not install the documentation" "$REPO/docs/AUDIO.md"
 package_without "no THIRD_PARTY.md fails, saying so" "could not install the licence" "$REPO/THIRD_PARTY.md"
 package_without "no LICENSE-APACHE in the fork fails, saying so" "could not install the plugin's licences" "$PLUG/LICENSE-APACHE"
 package_without "no built .so fails, saying so" "build first" "$SO"
+package_without "no VERSION fails, saying so" "could not install VERSION" "$REPO/VERSION"
+package_without "no unit fails, saying so" "could not install the unit" "$REPO/systemd/jayos-audio-denoise.service"
+package_without "no 1.x command fails, saying so" "could not install jayos-denoise" "$REPO/src/jayos-denoise"
 steps package "$PLUG"
 expect_fail "no pkgdir is a usage error" "usage:"
 
