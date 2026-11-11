@@ -321,15 +321,25 @@ retire_easyeffects_preset() {
     # shellcheck source=easyeffects-lib.sh
     source "$HERE/easyeffects-lib.sh" 2>/dev/null || return 0
     f="$(ee_presets_root 2>/dev/null)/input/denoise.json"
-    jq -e '.input["deepfilternet#0"].bypass == false' "$f" >/dev/null 2>&1 || return 0
-    tmp=$(mktemp "${f%/*}/.denoise.json.XXXXXX") || return 0
-    if jq '.input["deepfilternet#0"].bypass = true' "$f" > "$tmp" 2>/dev/null && mv -f -- "$tmp" "$f"; then
-        echo "bypassed the DeepFilterNet in EasyEffects' denoise preset, which jayos-denoise 1.x wrote"
-        if ee_running 2>/dev/null && [[ "$(ee_current_preset input 2>/dev/null)" == denoise ]]; then
-            ee_load_preset input denoise >/dev/null 2>&1 || true
+    jq -e '.input["deepfilternet#0"] | type == "object"' "$f" >/dev/null 2>&1 || return 0
+    if jq -e '.input["deepfilternet#0"].bypass == false' "$f" >/dev/null 2>&1; then
+        tmp=$(mktemp "${f%/*}/.denoise.json.XXXXXX") || return 0
+        if jq '.input["deepfilternet#0"].bypass = true' "$f" > "$tmp" 2>/dev/null && mv -f -- "$tmp" "$f"; then
+            echo "bypassed the DeepFilterNet in EasyEffects' denoise preset, which jayos-denoise 1.x wrote"
+        else
+            rm -f -- "$tmp"
+            return 0
         fi
-    else
-        rm -f -- "$tmp"
+    fi
+    # Reloaded wherever an instance holds it, the file bypassed now or
+    # already: EasyEffects restores its input pipeline from its own database
+    # at start, not from this file, so an instance started after an off that
+    # found nothing running holds the preset un-bypassed whatever the file
+    # says -- 1.x's apply reloaded it for exactly that, and JayOS's popup
+    # still spawns this at every EasyEffects start it makes (its
+    # easyeffects-lib.sh, ee_apply_noise_setting).
+    if ee_running 2>/dev/null && [[ "$(ee_current_preset input 2>/dev/null)" == denoise ]]; then
+        ee_load_preset input denoise >/dev/null 2>&1 || true
     fi
 }
 

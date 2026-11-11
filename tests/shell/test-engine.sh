@@ -352,6 +352,42 @@ check "and the preset is kept" 1 "$(ls "$ee/input" | grep -c '^denoise.json$')"
 engine denoise off
 says_not "a preset already bypassed is not written again" "bypassed the DeepFilterNet" "$OUT"
 
+# An instance running and holding the preset, which it restored from its own
+# database un-bypassed whatever the file says: reloaded, the file bypassed
+# already or not. The instance is a pgrep that finds it, a socket file, and
+# a socat that answers the lib's questions as EasyEffects 8 does and writes
+# down every line, all on PATH ahead of the machine's.
+if command -v python3 >/dev/null 2>&1; then
+    EEB="$WORK/ee-bin"
+    mkdir -p "$EEB"
+    cat > "$EEB/pgrep" <<'STUB'
+#!/usr/bin/env bash
+[[ " $* " == *" easyeffects "* ]]
+STUB
+    cat > "$EEB/socat" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == -u ]] && exit 0
+read -r line
+printf 'heard %s\n' "$line" >> "$ST/ee.log"
+[[ "$line" == get_last_loaded_preset:input ]] && echo denoise
+exit 0
+STUB
+    chmod +x "$EEB/pgrep" "$EEB/socat"
+    ee_up() { mkdir -p "$WORK/run"; python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$WORK/run/EasyEffectsServer"; }
+    rm -f "$ST/ee.log"; ee_up
+    PATH="$EEB:$PATH" engine denoise off
+    check "an instance holding the preset, already bypassed on disk, is told to reload it" 1 \
+        "$(grep -c '^heard load_preset:input:denoise$' "$ST/ee.log" 2>/dev/null || echo 0)"
+    printf '{"input":{"plugins_order":["deepfilternet#0"],"deepfilternet#0":{"bypass":false}}}\n' > "$ee/input/denoise.json"
+    rm -f "$ST/ee.log"
+    PATH="$EEB:$PATH" engine denoise off
+    check "and one whose file it has just bypassed, too" "1 true" \
+        "$(grep -c '^heard load_preset:input:denoise$' "$ST/ee.log" 2>/dev/null || echo 0) $(jq -r '.input["deepfilternet#0"].bypass' "$ee/input/denoise.json")"
+    rm -f "$WORK/run/EasyEffectsServer"
+else
+    skip "a running EasyEffects holding the 1.x preset not exercised: no python3 to make its socket"
+fi
+
 # ── jayos-denoise ────────────────────────────────────────────────────────────
 echo
 echo "jayos-denoise, the 1.x verbs"
