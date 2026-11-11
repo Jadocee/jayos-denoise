@@ -186,6 +186,12 @@ filter_chain_module() {
 # Mono, deep_filter_mono: a microphone is one channel, and EasyEffects fed it
 # to the stereo instance twice over, two models' work for one voice. 48 kHz,
 # the rate the model is built for, which the adapter converts to and from.
+#
+# The source carries a device.description as well as the node.description
+# every filter-chain node gets: pactl lists a source's properties, and a
+# reader that names a device by device.description -- JayOS's
+# jayos-audio-state, pavucontrol's port list -- named this one by its
+# node.name.
 host_config() { # host_config <strength> <input node.name or ""> <plugin path>
     local strength=$1 input=$2 so=$3 target=""
     strength_params "$strength" || return 1
@@ -239,6 +245,7 @@ context.modules = [
             playback.props = {
                 node.name    = "$SOURCE"
                 media.class  = Audio/Source
+                device.description = "Microphone (noise suppressed)"
             }
         }
     }
@@ -349,16 +356,22 @@ denoise_status() {
 }
 
 denoise_on() { # denoise_on <strength> <wait seconds>
-    local strength=$1 input
+    local strength=$1 input was_input
     plugin_path >/dev/null || die "the DeepFilterNet plugin is not installed ($PLUGIN_SO in none of $LADSPA_DIRS)"
     filter_chain_module || die "PipeWire's filter-chain module is not installed"
+    was_input=$(state_get input)
     input=$(choose_input)
     state_set strength "$strength" || die "could not write $STATE_FILE"
     [[ -n "$input" ]] && state_set input "$input"
     retire_easyeffects_preset
-    # Restarted, not only started: a running host keeps the strength and the
-    # microphone it was started with.
-    if unit_active; then
+    # A running host recording the same microphone takes the strength live:
+    # JayOS's popup cycles the strength through `on`, and a restart is half a
+    # second of silence in a call while the model loads. Any other change of
+    # a running host is a restart, since it keeps the microphone it was
+    # started with.
+    if unit_active && [[ "$input" == "$was_input" ]] && node_id "$SOURCE" >/dev/null && live_strength "$strength"; then
+        systemctl --user enable "$UNIT" >/dev/null 2>&1
+    elif unit_active; then
         systemctl --user restart "$UNIT" 2>/dev/null || die "systemctl could not restart $UNIT"
         systemctl --user enable "$UNIT" >/dev/null 2>&1
     else
@@ -386,19 +399,26 @@ denoise_off() {
     echo "noise suppression off${input:+, recording $input}"
 }
 
-# A strength set on a running host, through the filter's control params, so a
-# call is not cut while the host restarts. Restarted where that fails.
-denoise_strength() { # denoise_strength <strength>
+# The running filter's controls set to a strength's, through its control
+# params, so a call is not cut while the host restarts. 1 where there is no
+# running capture node to set, or PipeWire refuses.
+live_strength() { # live_strength <strength>
     local id
-    state_set strength "$1" || die "could not write $STATE_FILE"
-    unit_active || { echo "strength $1, from the next start"; return 0; }
-    strength_params "$1"
+    strength_params "$1" || return 1
     # One line: the controls by the filter-chain's names, node:port.
     local params="\"df:Attenuation Limit (dB)\" $ATTEN \"df:Min processing threshold (dB)\" $MIN_T"
     params+=" \"df:Max ERB processing threshold (dB)\" $MAX_ERB \"df:Max DF processing threshold (dB)\" $MAX_DF"
     params+=" \"df:Min Processing Buffer (frames)\" $BUFFER \"df:Post Filter Beta\" $BETA"
-    if command -v pw-cli >/dev/null 2>&1 && id=$(node_id "$CAPTURE") \
-       && pw-cli set-param "$id" Props "{ params = [ $params ] }" >/dev/null 2>&1; then
+    command -v pw-cli >/dev/null 2>&1 && id=$(node_id "$CAPTURE") \
+        && pw-cli set-param "$id" Props "{ params = [ $params ] }" >/dev/null 2>&1
+}
+
+# A strength set on a running host, live where it can be. Restarted where
+# that fails.
+denoise_strength() { # denoise_strength <strength>
+    state_set strength "$1" || die "could not write $STATE_FILE"
+    unit_active || { echo "strength $1, from the next start"; return 0; }
+    if live_strength "$1"; then
         echo "strength $1"
     else
         systemctl --user restart "$UNIT" 2>/dev/null || die "systemctl could not restart $UNIT"

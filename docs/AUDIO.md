@@ -109,7 +109,10 @@ configuration; `contract/config.<strength>.conf` holds each, byte for byte.
 - **Live.** `strength` sets the running node's six controls with one
   `pw-cli set-param ... Props`, by the names the filter-chain gives them
   (`df:Attenuation Limit (dB)` and the rest), and restarts the host only where
-  that is refused. `input <node.name>` moves the running capture with
+  that is refused; so does `on` over a running host that records the same
+  microphone, since JayOS's popup cycles the strength through `on`, and a
+  restart is the model's load in silence, about 290 ms, in the middle of a
+  call. `input <node.name>` moves the running capture with
   `pw-metadata <id> target.object`. RUN on 0.4.17: the attenuation read back
   100 after `strength maximum`, and the capture relinked to the other
   microphone.

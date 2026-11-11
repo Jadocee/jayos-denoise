@@ -214,10 +214,34 @@ check "the filtered source is the default input" '{ "name": "jayos_denoise_sourc
 says "and it says so" "noise suppression on (gentle), recording alsa_input.usb-Mic" "$OUT"
 
 # Again, with the filtered source the default: the microphone is the one
-# recorded last, never the filter's own source, and a running host restarts.
+# recorded last, never the filter's own source, and a running host recording
+# it takes the new strength live -- JayOS's popup cycles the strength through
+# `on` -- with no restart, which is half a second of silence in a call.
 engine denoise on maximum
-check "on over a running host restarts it" 1 "$(calls 'systemctl --user restart jayos-audio-denoise.service')"
+check "on over a running host, the same microphone, sets the strength live" 1 \
+    "$(calls 'pw-cli set-param')"
+check "and does not restart it" 0 "$(calls 'systemctl --user restart jayos-audio-denoise.service')"
 check "and still records the microphone, not its own source" "input=alsa_input.usb-Mic" "$(grep '^input=' "$STATE")"
+check "and keeps the new strength" "strength=maximum" "$(grep '^strength=' "$STATE")"
+
+# Another microphone made the default while it ran: a restart, since the
+# running host keeps the microphone it was started with.
+printf '{ "name": "alsa_input.pci-Builtin" }' > "$ST/meta.default.configured.audio.source"
+printf '%s\n' "9 alsa_input.pci-Builtin Audio/Source" >> "$ST/nodes"
+engine denoise on maximum
+check "on over a running host, another microphone, restarts it" 1 \
+    "$(calls 'systemctl --user restart jayos-audio-denoise.service')"
+check "and records that one" "input=alsa_input.pci-Builtin" "$(grep '^input=' "$STATE")"
+
+# A running host whose live set is refused is restarted instead.
+fresh
+hardware_default alsa_input.usb-Mic
+engine denoise on gentle
+touch "$ST/pwcli-fail"
+engine denoise on balanced
+check "on whose live set is refused restarts the host" 1 \
+    "$(calls 'systemctl --user restart jayos-audio-denoise.service')"
+rm -f "$ST/pwcli-fail"
 
 fresh
 printf '{ "name": "easyeffects_source" }' > "$ST/meta.default.configured.audio.source"
