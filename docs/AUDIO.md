@@ -194,10 +194,18 @@ card, on 2026-11-11:
   silent run inside the speech, and the plugin's own line, "Holding 50.7ms for
   a quantum of 1024".
 - `tests/shell/test-floor.sh`'s box, above.
+- The recipe, `packaging/arch/PKGBUILD`, under makepkg -- pacman 6.0.2's,
+  Ubuntu's build, with Arch's flags written into its `makepkg.conf` -- at
+  `1e8e740`, with `check()`: 528 seconds, the fork's three tests and the two
+  patches' passing. pacman installed the package into a scratch root: 31
+  files, which `pacman -Qkk` found whole, `jayos-audio version` answering
+  2.0.0 through its `/usr/bin` link, the plugin carrying the headroom mark
+  and not the low-latency model; and `tests/shell/test-host.sh` passed over
+  that installed plugin.
 
-Read, not run: WirePlumber 0.5, which Arch ships, and so how it links the
-capture and keeps the default there; rtkit, the portal and module-rt's
-choice between them; EasyEffects with `processAllInputs` off; a call in
+Read, not run: Arch's makepkg 7 and pacman; WirePlumber 0.5, which Arch
+ships, and so how it links the capture and keeps the default there; rtkit,
+the portal and module-rt's choice between them; EasyEffects with `processAllInputs` off; a call in
 Element or anything else; a real microphone; and listening.
 
 ## Checking it on the machine

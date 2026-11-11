@@ -27,7 +27,13 @@ WirePlumber 0.4.17 in a container with no sound card
 default input, moved and restrengthened live, white noise 41.8 dB quieter
 through it, and the microphone the default again when it stopped; over a
 speech recording at 0 dB SNR, 22.7 dB less noise in the pauses and SI-SDR
-from 0.3 dB to 6.1. WirePlumber 0.5, which Arch ships, and rtkit have not run;
+from 0.3 dB to 6.1. The recipe ran under makepkg the same day -- pacman
+6.0.2's, Ubuntu's build, with Arch's flags in its `makepkg.conf` -- at
+`1e8e740`, `check()` and its proofs included, in 528 seconds, and pacman
+installed the package into a scratch root: 31 files, which `pacman -Qkk`
+found whole, the plugin carrying the headroom mark and not the low-latency
+model, and the host suite passing over the installed plugin. WirePlumber 0.5,
+which Arch ships, rtkit, and Arch's own makepkg and pacman have not run;
 `docs/AUDIO.md` draws the line. What ran before 2.0.0, with EasyEffects or a
 host paced like PipeWire as the plugin's host:
 
