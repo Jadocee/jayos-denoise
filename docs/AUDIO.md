@@ -233,9 +233,27 @@ card, on 2026-11-11:
   and not the low-latency model; and `tests/shell/test-host.sh` passed over
   that installed plugin.
 
+And on 2026-11-12, for the code that moved here from JayOS (the second
+half of this document): every `packaging/steps.sh` verb over a fresh copy of
+the pinned plugin repository, `check` running the plugin's six tests, the two
+programs' 185 and `tests/shell/test-audio-state.sh`'s 100 over the release
+build, and `package` making 34 files; `tests/shell/test-easyeffects.sh`'s 47
+with no EasyEffects running; JayOS's own `tools/test-easyeffects.sh`, 909,
+over this package's vendored copy against its stand-in EasyEffects, which
+listens, stops, saves and starts again; and the game tag in a PipeWire 1.0.5
+box, where a `paplay` and a `pw-play` under `game-env`'s two variables each
+made a node named `jayos-game`. Twelve changes over the helper, its library,
+the engine's dispatch, the packaging step and the lexer were each caught by
+these suites -- one only once the start hook's cases ran under `set -u`, as
+the helper does -- and twenty over the programs, by the fork that moved them,
+all but one that changes nothing a suite holds.
+
 Read, not run: Arch's makepkg 7 and pacman; WirePlumber 0.5, which Arch
 ships, and so how it links the capture and keeps the default there; rtkit,
-the portal and module-rt's choice between them; EasyEffects with `processAllInputs` off; a call in
+the portal and module-rt's choice between them; EasyEffects with `processAllInputs` off,
+and EasyEffects 8.3.2 itself -- its blocklist match, its preset loads with
+`ignorePresetBlocklist` on and its input chain's timer are read in its
+source; Steam, Proton and a game under `game-env`'s variables; a call in
 Element or anything else; a real microphone; and listening.
 
 ## Checking it on the machine

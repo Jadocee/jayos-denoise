@@ -271,20 +271,24 @@ echo "the caller's start hook"
 cat > "$WORK/hook.sh" <<HOOK
 printf '%s\n' "\$*" >> "$WORK/hook.calls"
 HOOK
+# Under set -u and pipefail, as easyeffects.sh sources the library: a hook
+# left unset must not end the caller with "unbound variable". Each run says
+# "after" once the call returns, and what the hook wrote follows it.
 hook() { # hook [value]: ee_on_start with JAYOS_AUDIO_EE_ON_START at value, or unset
+    local said
     rm -f "$WORK/hook.calls"
     if (( $# )); then
-        env -i PATH="$BIN:$SYS" JAYOS_AUDIO_EE_ON_START="$1" bash -c "source '$LIB'; ee_on_start"
+        said=$(env -i HOME="$HOME_DIR" PATH="$BIN:$SYS" JAYOS_AUDIO_EE_ON_START="$1" bash -c "set -uo pipefail; source '$LIB'; ee_on_start; echo after" 2>&1)
     else
-        env -i PATH="$BIN:$SYS" bash -c "source '$LIB'; ee_on_start"
+        said=$(env -i HOME="$HOME_DIR" PATH="$BIN:$SYS" bash -c "set -uo pipefail; source '$LIB'; ee_on_start; echo after" 2>&1)
     fi
     for _ in $(seq 30); do [[ -s "$WORK/hook.calls" ]] && break; sleep 0.1; done
-    cat "$WORK/hook.calls" 2>/dev/null
+    printf '%s|%s' "$said" "$(cat "$WORK/hook.calls" 2>/dev/null)"
 }
-check "ee_on_start runs the command it is named, with its words, detached" "apply now" \
+check "ee_on_start runs the command it is named, with its words, detached" "after|apply now" \
     "$(hook "$WORK/hook.sh apply now")"
-check "and runs nothing where none is named" "" "$(hook)"
-check "or where the name is empty" "" "$(hook '')"
+check "and runs nothing where none is named, the caller going on under set -u" "after|" "$(hook)"
+check "or where the name is empty" "after|" "$(hook '')"
 check "the desktop's own script is named nowhere on a code line" 0 \
     "$(code_sh "$LIB" | grep -c 'hypr/denoise\.sh')"
 
