@@ -185,3 +185,14 @@ In 2.0.0 four more came from jayos, at commit `d9428e6`, its `dev` that day:
 `src/jayos-audio` from its `config/common/scripts/hypr/pulse-latency.sh`, and
 `tests/shell/test-floor.sh` from its `tools/test-pulse-latency.sh`; each
 header says so.
+
+And from jayos commit `45256e08`, its working branch on 2026-11-11: the two
+programs under `rust/crates/jayos-audio-tools/src/bin/`, byte for byte from its
+`rust/crates/jayos-desktop/src/bin/`; `rust/crates/jayos-core/`'s files but
+`src/lib.rs`, byte for byte from its `rust/crates/jayos-core/`
+(`PROVENANCE.md` there has the sums); `rust/rustfmt.toml`, from its
+`rust/rustfmt.toml`; and `tests/shell/test-audio-state.sh`, from its
+`tools/test-audio-state.sh`, with `path_without` from its
+`tools/lib/absent.sh`, the changes listed in the suite's header. The same
+move under the same licence: the workspace's Cargo.toml says `license =
+"MIT"`, as jayos's said for them there.

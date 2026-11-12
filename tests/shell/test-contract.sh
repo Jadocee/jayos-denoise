@@ -79,9 +79,11 @@ skip() { printf '  skip %s\n' "$1"; SKIP=$((SKIP + 1)); }
 
 # ── copies ───────────────────────────────────────────────────────────────────
 
-# This tree without .git and without what makepkg leaves in packaging/arch --
-# the fork's clone and its target/ run to gigabytes, and contract.sh and
-# check.sh read none of it.
+# This tree without .git, without what makepkg leaves in packaging/arch --
+# the fork's clone and its target/ run to gigabytes -- and without rust/target,
+# the programs' build, about 400 MB after one debug and one release build
+# (measured on 2026-11-12), copied again for every case below. contract.sh
+# and check.sh read none of it.
 # A tree without the two scripts under test is a defect in the tree (1); a
 # copy that came out without them is this suite failing to start (2).
 for f in tools/contract.sh tools/check.sh; do
@@ -90,7 +92,7 @@ done
 PRISTINE="$WORK/pristine"
 mkdir -p "$PRISTINE"
 ( cd "$ROOT" && find . \( -path ./.git -o -path ./packaging/arch/src -o -path ./packaging/arch/pkg \
-        -o -path ./packaging/arch/DeepFilterNetPlus -o -name '*.pkg.tar*' \) -prune \
+        -o -path ./packaging/arch/DeepFilterNetPlus -o -name '*.pkg.tar*' -o -path ./rust/target \) -prune \
         -o \( -type f -o -type l \) -print0 \
   | xargs -0 cp -a --parents -t "$PRISTINE" )
 [[ -f "$PRISTINE/tools/contract.sh" && -f "$PRISTINE/tools/check.sh" ]] || {
@@ -225,6 +227,28 @@ if mutate "$D/packaging/patches/0001-ladspa-hold-headroom-above-the-host-quantum
         pass "patches that log no priming line stop the contract, saying what was looked for"
     else
         bad "patches with no priming line: exit $STATUS, and: $(head -3 <<<"$OUT" | tr '\n' ';')"
+    fi
+fi
+
+# JAYOS-AUDIO-STATE'S KEYS are read off its structs: a field renamed in Node
+# names audio-state-fields.txt and nothing else, and a serde attribute, which
+# could rename or reorder what the program prints, stops the contract rather
+# than being read past.
+AS_SRC=rust/crates/jayos-audio-tools/src/bin/jayos-audio-state.rs
+D=$(fresh)
+if mutate "$D/$AS_SRC" 's/^    is_default: bool,$/    is_active: bool,/'; then
+    contract "$D"
+    expect "a field of jayos-audio-state's Node renamed names audio-state-fields.txt, and nothing else" 1 \
+        "contract/audio-state-fields.txt differs from what the code produces"
+    says "and shows the new key" "node is_active"
+fi
+D=$(fresh)
+if mutate "$D/$AS_SRC" 's/^struct Master \{$/#[serde(rename_all = "camelCase")]\nstruct Master {/'; then
+    contract "$D"
+    if [[ "$STATUS" == 1 ]] && grep -qF "#[serde(...)] attribute" <<<"$OUT"; then
+        pass "a serde attribute in jayos-audio-state stops the contract, saying why"
+    else
+        bad "a serde attribute: exit $STATUS, and: $(head -3 <<<"$OUT" | tr '\n' ';')"
     fi
 fi
 
@@ -614,6 +638,25 @@ else
     else
         bad "could not commit the copy into a scratch repository; the inside-git cases examined nothing"
     fi
+fi
+
+# CHECK.SH'S rust/ STEP, read rather than run: running it means a cargo build
+# in every scratch copy, which no case here can afford, and a fake cargo
+# would prove only that the fake was called. So its code lines, comments
+# stripped -- a comment naming `cargo test` is not a run of it -- must build,
+# test and format-check rust/ locked, and the step must be one check.sh runs.
+RUST_STEP=$(sed -n '/^rust_checks() {$/,/^}$/p' "$ROOT/tools/check.sh" | grep -vE '^[[:space:]]*#')
+for want in 'cargo build --locked --workspace' 'cargo test --locked --workspace' 'cargo fmt --all --check'; do
+    if grep -qF -- "$want" <<<"$RUST_STEP"; then
+        pass "check.sh's rust/ step runs $want"
+    else
+        bad "check.sh's rust/ step does not run $want"
+    fi
+done
+if grep -vE '^[[:space:]]*#' "$ROOT/tools/check.sh" | grep -qx 'run "rust/" rust_checks'; then
+    pass "and check.sh runs that step"
+else
+    bad "check.sh defines a rust/ step it never runs"
 fi
 
 echo

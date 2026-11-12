@@ -10,8 +10,9 @@
 # not the same answer as "current" and must not be read as one.
 #
 # Every file but README.md is made here, by RUNNING the engine and reading
-# the library, never written by hand: a contract written by hand would be a
-# second description of the code, and the two would drift. JayOS vendors a
+# the library and jayos-audio-state's source, never written by hand: a
+# contract written by hand would be a second description of the code, and
+# the two would drift. JayOS vendors a
 # copy of this directory with each file's sha256 (its
 # tools/fixtures/jayos-denoise-contract/PROVENANCE.md), and its suites hold
 # its wrapper, its popup and its doctor to the copy.
@@ -23,6 +24,7 @@ ENGINE="$ROOT/src/jayos-audio"
 SHIM="$ROOT/src/jayos-denoise"
 LIB="$ROOT/src/easyeffects-lib.sh"
 STEPS="$ROOT/packaging/steps.sh"
+AUDIO_STATE="$ROOT/rust/crates/jayos-audio-tools/src/bin/jayos-audio-state.rs"
 OUT="$ROOT/contract"
 
 command -v jq >/dev/null 2>&1 || { echo "contract not exercised: jq is not installed" >&2; exit 2; }
@@ -146,6 +148,28 @@ generate() { # generate <dir>
             done
     } > "$dir/steps.txt"
     [[ $(grep -vc '^#' "$dir/steps.txt") -gt 0 ]] || die "read no verbs out of $STEPS"
+
+    # The keys jayos-audio-state prints: the fields of the three structs
+    # serde serialises, in declaration order, which is serde's output order.
+    # Read off the source rather than off a run, because a run needs a build
+    # and this script needs only jq; tests/shell/test-audio-state.sh holds
+    # this file to what the built program actually prints. A serde attribute
+    # anywhere in the file could rename a field or change the order, which
+    # this reading would not see, so one is refused rather than read past.
+    [[ -f "$AUDIO_STATE" ]] || die "no $AUDIO_STATE to read jayos-audio-state's keys from"
+    ! grep -qE '^[[:space:]]*#\[serde' "$AUDIO_STATE" \
+        || die "$AUDIO_STATE has a #[serde(...)] attribute, which this cannot read the keys past"
+    local st obj fields
+    { header "The keys jayos-audio-state prints, '<object> <key>' a line, in its order: state is the bare answer, node each object of its three lists, master the answer to 'master sink|source'." \
+             "the State, Node and Master structs of rust/crates/jayos-audio-tools/src/bin/jayos-audio-state.rs"
+      for st in State Node Master; do
+          obj=${st,,}
+          fields=$(sed -n "/^struct $st {\$/,/^}\$/p" "$AUDIO_STATE" \
+                   | sed -n -E 's/^    ([a-z_][a-z0-9_]*): .*,$/\1/p')
+          [[ -n "$fields" ]] || die "read no fields of struct $st out of $AUDIO_STATE"
+          sed "s/^/$obj /" <<<"$fields"
+      done
+    } > "$dir/audio-state-fields.txt"
 }
 
 GEN="$WORK/contract"

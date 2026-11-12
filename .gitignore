@@ -6,3 +6,7 @@ packaging/arch/src/
 packaging/arch/pkg/
 packaging/arch/*.pkg.tar*
 packaging/arch/*.log
+# cargo's output for rust/, the two programs' workspace: packaging/steps.sh
+# builds into rust/target wherever the building user's CARGO_TARGET_DIR
+# points, and so does a `cargo build` run by hand in rust/.
+rust/target/

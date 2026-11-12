@@ -1,0 +1,21 @@
+[package]
+name = "jayos-audio-tools"
+description = "jayos-audio-state and jayos-equalizer-preset: JayOS's audio helpers, shipped by jayos-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# What the two programs use and nothing else: JayOS's jayos-desktop crate,
+# where they lived, carries regex, time, toml and more for its other programs.
+[dependencies]
+jayos-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = { workspace = true }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

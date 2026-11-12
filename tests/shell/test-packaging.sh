@@ -20,7 +20,8 @@
 #
 # depends= is held both ways to what the package runs: the plugin's half to
 # the NEEDED check in steps.sh, the engine's to the commands a small shell
-# lexer reads out of src/jayos-denoise and src/easyeffects-lib.sh.
+# lexer reads out of src/jayos-denoise and src/easyeffects-lib.sh, and the
+# programs' to what jayos-audio-state starts through its run().
 #
 # What this does NOT prove, and is read rather than run: that makepkg accepts
 # the file (no makepkg or namcap here), that the source=() line clones, and
@@ -560,6 +561,57 @@ for tool in $(printf '%s\n' "${!ROW_PKG[@]}" | sort); do
             fi
             ;;
         *) bad "the row for $tool says '${ROW_HOW[$tool]}', which is not depends, optdepends or probed" ;;
+    esac
+done
+
+# THE PROGRAMS' HALF: what jayos-audio-state runs. Every program it starts
+# goes through its one `run("<name>", ...)` (its spawning wrapper), so the
+# names are read off those calls on code lines, comments stripped -- a
+# comment naming pactl is not a call of it -- and above the file's one
+# #[cfg(test)], whose tests run sh and sleep. jayos-equalizer-preset starts
+# nothing. Each name has a row: the package, and whether depends= or
+# optdepends= declares it. pactl is optdepends, as the floor already had it:
+# the program never probes for it, and a pactl that is not there is a sound
+# server that answered nothing -- an empty popup, not a failure -- which is
+# a choice the recipe states, not one this suite makes.
+read -r -d '' PROGRAM_TOOLS <<'TABLE'
+pactl    libpulse     optdepends
+pw-dump  pipewire     depends
+wpctl    wireplumber  depends
+TABLE
+AUDIO_STATE="$ROOT/rust/crates/jayos-audio-tools/src/bin/jayos-audio-state.rs"
+PROGRAM_RUNS=$(sed -E '/^#\[cfg\(test\)\]$/,$d; s://.*$::' "$AUDIO_STATE" 2>/dev/null \
+    | grep -oE '(^|[^A-Za-z0-9_])run\("[^"]+"' | sed -E 's/.*run\("//; s/"$//' | sort -u)
+if [[ -n "$PROGRAM_RUNS" ]] && grep -qx pactl <<<"$PROGRAM_RUNS"; then
+    pass "jayos-audio-state runs $(grep -c . <<<"$PROGRAM_RUNS") programs through run(): $(paste -sd' ' <<<"$PROGRAM_RUNS")"
+else
+    bad "no run(\"...\") call, or none of pactl, read out of $AUDIO_STATE; nothing below examined it"
+fi
+declare -A PROG_PKG=() PROG_HOW=()
+while read -r tool pkg how; do
+    [[ -n "$tool" ]] || continue
+    PROG_PKG[$tool]=$pkg
+    PROG_HOW[$tool]=$how
+done <<<"$PROGRAM_TOOLS"
+for tool in $PROGRAM_RUNS; do
+    [[ -v PROG_PKG[$tool] ]] || bad "jayos-audio-state runs $tool, which no row of the programs' table assigns to a package"
+done
+for tool in $(printf '%s\n' "${!PROG_PKG[@]}" | sort); do
+    pkg=${PROG_PKG[$tool]}
+    if ! grep -qx -- "$tool" <<<"$PROGRAM_RUNS"; then
+        bad "the programs' table names $tool, which jayos-audio-state no longer runs"
+        continue
+    fi
+    case ${PROG_HOW[$tool]} in
+        depends) NEED[$pkg]+=" $tool(jayos-audio-state)" ;;
+        optdepends)
+            if recipe "for v in \"\${optdepends[@]}\"; do [[ \$v == '$pkg:'* ]] && exit 0; done; exit 1"; then
+                pass "optdepends=() has $pkg, for jayos-audio-state's $tool"
+            else
+                bad "jayos-audio-state runs $tool, but neither depends=() nor optdepends=() names $pkg"
+            fi
+            ;;
+        *) bad "the programs' row for $tool says '${PROG_HOW[$tool]}', which is not depends or optdepends" ;;
     esac
 done
 

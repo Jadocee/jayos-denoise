@@ -24,7 +24,12 @@
 # fakes first on PATH: they record the arguments and the environment steps.sh
 # gave them, and print what a case puts in front of them -- feature trees cut
 # from a real `cargo tree` of the pinned fork, symbol and NEEDED lists shaped
-# like the real plugin's.
+# like the real plugin's. This tree's own programs, rust/'s, are stand-ins
+# too: a Cargo.toml and Cargo.lock steps.sh only looks for, two executables
+# of distinct text where cargo would leave the release build, and a
+# tests/shell/test-audio-state.sh that records the binary it was handed --
+# whether the real programs build and pass is `cargo test` in rust/ and the
+# real suite, which tools/check.sh runs.
 #
 # Each failure case changes ONE thing from a configuration that passes, and
 # asserts the sentence steps.sh dies with, not only the status: a fixture
@@ -108,6 +113,18 @@ printf 'stand-in: the audio document\n' > "$REPO/docs/AUDIO.md"
 STEPS="$REPO/packaging/steps.sh"
 PIN_FILE="$REPO/packaging/arch/PKGBUILD"
 
+# rust/, as steps.sh needs it to be: the two files tools_dir() asks for, and
+# the release build the fake cargo would have left, one stand-in per program
+# with its own text so that one installed under the other's name is caught.
+TOOLS="$REPO/rust"
+mkdir -p "$TOOLS/target/release" "$REPO/tests/shell"
+printf 'stand-in: the workspace manifest\n' > "$TOOLS/Cargo.toml"
+printf 'stand-in: the lock\n' > "$TOOLS/Cargo.lock"
+for b in jayos-audio-state jayos-equalizer-preset; do
+    printf '#!/bin/sh\n# stand-in: %s\n' "$b" > "$WORK/$b.built"
+    chmod 755 "$WORK/$b.built"
+done
+
 # THE FAKES. They find their control files beside themselves, so nothing
 # has to be exported to reach them through steps.sh.
 F="$WORK/fake"
@@ -116,13 +133,17 @@ mkdir -p "$WORK/bin" "$F"
 cat > "$WORK/bin/cargo" <<'FAKE'
 #!/usr/bin/env bash
 # cargo: records argv and the environment it was run with, prints tree.out
-# for `tree`, and exits with status.<subcommand> (0 when there is none).
+# for `tree`, and exits with status.<subcommand> (0 when there is none) --
+# or, run in a directory named rust, this tree's workspace, with
+# status.<subcommand>.rust, so that a case can fail the programs' half of a
+# step and not the plugin's.
 F="$(dirname "$0")/../fake"
 { printf '%q ' "$@"; printf '\n'; } >> "$F/cargo.argv"
 printf '%s RUSTUP_TOOLCHAIN=%s CARGO_TARGET_DIR=%s PWD=%s\n' \
     "$1" "${RUSTUP_TOOLCHAIN-<unset>}" "${CARGO_TARGET_DIR-<unset>}" "$PWD" >> "$F/cargo.env"
 [[ "$1" == tree ]] && cat "$F/tree.out"
-s=0; [[ -f "$F/status.$1" ]] && s=$(<"$F/status.$1")
+st="$F/status.$1"; [[ "${PWD##*/}" == rust ]] && st="$F/status.$1.rust"
+s=0; [[ -f "$st" ]] && s=$(<"$st")
 exit "$s"
 FAKE
 
@@ -150,9 +171,12 @@ FAKE
 
 cat > "$WORK/bin/readelf" <<'FAKE'
 #!/usr/bin/env bash
-# readelf: prints readelf.out.
+# readelf: prints readelf.out, or readelf.out.<the file's name> where a case
+# gave one file NEEDED entries of its own.
 F="$(dirname "$0")/../fake"
 { printf '%q ' "$@"; printf '\n'; } >> "$F/readelf.argv"
+f="$F/readelf.out.${2##*/}"
+[[ -f "$f" ]] && exec cat "$f"
 cat "$F/readelf.out"
 FAKE
 chmod 755 "$WORK/bin"/*
@@ -392,16 +416,30 @@ expect_ok "fetch runs"
 # The host is one no machine has, so a fetch that wrote its target down, or
 # asked anything but rustc, cannot match it.
 want="fetch --locked --target $HOST "
-if [[ "$(cat "$F/cargo.argv" 2>/dev/null)" == "$want" ]]; then
+if [[ "$(sed -n 1p "$F/cargo.argv" 2>/dev/null)" == "$want" ]]; then
     pass "fetch is \`cargo fetch --locked --target <the host rustc -vV names>\`"
 else
-    bad "fetch ran cargo as '$(cat "$F/cargo.argv" 2>/dev/null)', not '$want'"
+    bad "fetch ran cargo as '$(sed -n 1p "$F/cargo.argv" 2>/dev/null)', not '$want'"
 fi
 want="fetch RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=$TREE/target PWD=$TREE"
-if [[ "$(cat "$F/cargo.env" 2>/dev/null)" == "$want" ]]; then
+if [[ "$(sed -n 1p "$F/cargo.env" 2>/dev/null)" == "$want" ]]; then
     pass "in the tree, with RUSTUP_TOOLCHAIN=stable and CARGO_TARGET_DIR=<tree>/target over the caller's"
 else
-    bad "fetch ran cargo with '$(cat "$F/cargo.env" 2>/dev/null)', not '$want'"
+    bad "fetch ran cargo with '$(sed -n 1p "$F/cargo.env" 2>/dev/null)', not '$want'"
+fi
+# And this tree's programs, the same fetch in rust/, into rust/target over
+# the caller's as well -- and two calls in all, not one or three.
+want="fetch --locked --target $HOST "
+if [[ "$(sed -n 2p "$F/cargo.argv" 2>/dev/null)" == "$want" && "$(grep -c . "$F/cargo.argv")" == 2 ]]; then
+    pass "then the same fetch for rust/, and nothing else"
+else
+    bad "fetch's cargo calls were '$(oneline "$(cat "$F/cargo.argv" 2>/dev/null)")'"
+fi
+want="fetch RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=$TOOLS/target PWD=$TOOLS"
+if [[ "$(sed -n 2p "$F/cargo.env" 2>/dev/null)" == "$want" ]]; then
+    pass "in rust/, with RUSTUP_TOOLCHAIN=stable and CARGO_TARGET_DIR=rust/target over the caller's"
+else
+    bad "rust/'s fetch ran with '$(sed -n 2p "$F/cargo.env" 2>/dev/null)', not '$want'"
 fi
 
 reset_cargo
@@ -423,6 +461,15 @@ reset_cargo
 printf '101' > "$F/status.fetch"
 steps fetch "$FORK"
 expect_fail "a cargo fetch that fails fails fetch" "cargo fetch failed"
+reset_cargo
+printf '101' > "$F/status.fetch.rust"
+steps fetch "$FORK"
+expect_fail "and so does rust/'s, naming it" "cargo fetch failed for rust/"
+reset_cargo
+mv "$TOOLS/Cargo.lock" "$TOOLS/Cargo.lock.hidden"
+steps fetch "$FORK"
+mv "$TOOLS/Cargo.lock.hidden" "$TOOLS/Cargo.lock"
+expect_fail "a tree with no rust/Cargo.lock fails fetch, rather than fetching unlocked" "no rust/Cargo.toml and Cargo.lock"
 
 reset_cargo
 ( export CARGO_TARGET_DIR="$WORK/elsewhere" RUSTUP_TOOLCHAIN=nightly
@@ -435,22 +482,45 @@ expect_ok "build runs"
 # panic = "abort" would turn the plugin's caught sample-rate panic into a
 # crash of the sound server.
 want="build --frozen --release -p deep-filter-ladspa --no-default-features "
-if [[ "$(cat "$F/cargo.argv" 2>/dev/null)" == "$want" ]]; then
+if [[ "$(sed -n 1p "$F/cargo.argv" 2>/dev/null)" == "$want" ]]; then
     pass "build is \`cargo build --frozen --release -p deep-filter-ladspa --no-default-features\`"
 else
-    bad "build ran cargo as '$(cat "$F/cargo.argv" 2>/dev/null)', not '$want'"
+    bad "build ran cargo as '$(sed -n 1p "$F/cargo.argv" 2>/dev/null)', not '$want'"
 fi
 want="build RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=$TREE/target PWD=$TREE"
-if [[ "$(cat "$F/cargo.env" 2>/dev/null)" == "$want" ]]; then
+if [[ "$(sed -n 1p "$F/cargo.env" 2>/dev/null)" == "$want" ]]; then
     pass "in the tree, with RUSTUP_TOOLCHAIN=stable and CARGO_TARGET_DIR=<tree>/target over the caller's"
 else
-    bad "build ran cargo with '$(cat "$F/cargo.env" 2>/dev/null)', not '$want'"
+    bad "build ran cargo with '$(sed -n 1p "$F/cargo.env" 2>/dev/null)', not '$want'"
+fi
+# The programs: frozen as the plugin is, since build may run with no
+# network, and in the workspace's own release profile.
+want="build --frozen --release -p jayos-audio-tools --bins "
+if [[ "$(sed -n 2p "$F/cargo.argv" 2>/dev/null)" == "$want" && "$(grep -c . "$F/cargo.argv")" == 2 ]]; then
+    pass "then \`cargo build --frozen --release -p jayos-audio-tools --bins\` for rust/, and nothing else"
+else
+    bad "build's cargo calls were '$(oneline "$(cat "$F/cargo.argv" 2>/dev/null)")'"
+fi
+want="build RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=$TOOLS/target PWD=$TOOLS"
+if [[ "$(sed -n 2p "$F/cargo.env" 2>/dev/null)" == "$want" ]]; then
+    pass "in rust/, into rust/target over the caller's"
+else
+    bad "rust/'s build ran with '$(sed -n 2p "$F/cargo.env" 2>/dev/null)', not '$want'"
 fi
 
 reset_cargo
 printf '101' > "$F/status.build"
 steps build "$FORK"
 expect_fail "a cargo build that fails fails build" "cargo build failed"
+reset_cargo
+printf '101' > "$F/status.build.rust"
+steps build "$FORK"
+expect_fail "and so does rust/'s, naming it" "cargo build failed for rust/"
+reset_cargo
+mv "$TOOLS/Cargo.toml" "$TOOLS/Cargo.toml.hidden"
+steps build "$FORK"
+mv "$TOOLS/Cargo.toml.hidden" "$TOOLS/Cargo.toml"
+expect_fail "a tree with no rust/Cargo.toml fails build" "no rust/Cargo.toml and Cargo.lock"
 steps build
 expect_fail "build with no tree is a usage error" "usage:"
 steps fetch "$WORK/no-such-dir"
@@ -568,6 +638,19 @@ baseline() {
     cp "$ROOT/src/jayos-audio" "$REPO/src/jayos-audio"
     cp "$ROOT/src/jayos-denoise" "$REPO/src/jayos-denoise"
     cp "$ROOT/src/easyeffects-lib.sh" "$REPO/src/easyeffects-lib.sh"
+    rm -f "$F"/readelf.out.* "$F/suite.bin"
+    local b
+    for b in jayos-audio-state jayos-equalizer-preset; do
+        cp -p "$WORK/$b.built" "$TOOLS/target/release/$b"
+    done
+    # The suite check hands the release jayos-audio-state: it writes down the
+    # binary it was given and exits with status.suite.
+    cat > "$REPO/tests/shell/test-audio-state.sh" <<SUITE
+#!/usr/bin/env bash
+printf '%s\\n' "\${JAYOS_AUDIO_STATE_BIN-<unset>}" >> "$F/suite.bin"
+s=0; [[ -f "$F/status.suite" ]] && s=\$(<"$F/status.suite")
+exit "\$s"
+SUITE
 }
 check_tree() { baseline; "$@"; steps check "$PLUG"; }
 PLUG_REAL=$(realpath "$PLUG")
@@ -594,10 +677,33 @@ if [[ "$(cat "$F/nm.argv" 2>/dev/null)" == "-D $PLUG_REAL/target/release/libdeep
 else
     bad "nm ran as '$(cat "$F/nm.argv" 2>/dev/null)'"
 fi
-if [[ "$(cat "$F/readelf.argv" 2>/dev/null)" == "-d $PLUG_REAL/target/release/libdeep_filter_ladspa.so " ]]; then
+if [[ "$(sed -n 1p "$F/readelf.argv" 2>/dev/null)" == "-d $PLUG_REAL/target/release/libdeep_filter_ladspa.so " ]]; then
     pass "readelf reads the dynamic section of the built .so"
 else
-    bad "readelf ran as '$(cat "$F/readelf.argv" 2>/dev/null)'"
+    bad "readelf ran as '$(sed -n 1p "$F/readelf.argv" 2>/dev/null)'"
+fi
+# This tree's programs: what each links, their unit tests in rust/, and the
+# built jayos-audio-state handed to the suite that runs it whole.
+if [[ "$(sed -n 2,3p "$F/readelf.argv" 2>/dev/null | paste -sd'|')" \
+      == "-d $TOOLS/target/release/jayos-audio-state |-d $TOOLS/target/release/jayos-equalizer-preset " ]]; then
+    pass "and of each release program in rust/target"
+else
+    bad "readelf ran over the programs as '$(oneline "$(sed -n '2,$p' "$F/readelf.argv" 2>/dev/null)")'"
+fi
+if [[ "$(sed -n 3p "$F/cargo.argv" 2>/dev/null)" == "test --frozen --workspace " && "$(grep -c . "$F/cargo.argv")" == 3 ]]; then
+    pass "the programs' tests are \`cargo test --frozen --workspace\`, after the fork's"
+else
+    bad "check's cargo calls were '$(oneline "$(cat "$F/cargo.argv" 2>/dev/null)")'"
+fi
+if [[ "$(sed -n 3p "$F/cargo.env" 2>/dev/null)" == "test RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=$TOOLS/target PWD=$TOOLS" ]]; then
+    pass "in rust/, into rust/target, not the plugin's target directory exported in the same step"
+else
+    bad "the programs' tests ran with '$(sed -n 3p "$F/cargo.env" 2>/dev/null)'"
+fi
+if [[ "$(cat "$F/suite.bin" 2>/dev/null)" == "$TOOLS/target/release/jayos-audio-state" ]]; then
+    pass "and tests/shell/test-audio-state.sh runs once, over the release jayos-audio-state"
+else
+    bad "the suite was handed '$(oneline "$(cat "$F/suite.bin" 2>/dev/null)")'"
 fi
 
 baseline
@@ -668,6 +774,23 @@ expect_fail "an empty NEEDED list fails rather than passing as nothing outside" 
 echo "  -- the fork's tests"
 check_tree eval 'printf "101" > "$F/status.test"'
 expect_fail "failing fork tests fail check" "the fork's tests failed"
+
+echo "  -- the programs"
+for b in jayos-audio-state jayos-equalizer-preset; do
+    check_tree rm -f "$TOOLS/target/release/$b"
+    expect_fail "no release $b fails check" "no $TOOLS/target/release/$b; build first"
+done
+check_tree eval 'readelf_out "${NEEDED_REAL[@]}" libpulse.so.0 > "$F/readelf.out.jayos-equalizer-preset"'
+expect_fail "a program that links what depends= does not install fails, naming it" \
+    "jayos-equalizer-preset links what depends= does not install: libpulse.so.0"
+check_tree eval 'printf "101" > "$F/status.test.rust"'
+expect_fail "failing tests in rust/ fail check" "the programs' tests failed"
+check_tree eval 'printf "1" > "$F/status.suite"'
+expect_fail "a failing tests/shell/test-audio-state.sh fails check" "test-audio-state.sh failed against the built jayos-audio-state"
+check_tree eval 'printf "2" > "$F/status.suite"'
+expect_fail "and so does one that could not run: the binary it was handed was just built" "test-audio-state.sh failed"
+check_tree rm -f "$REPO/tests/shell/test-audio-state.sh"
+expect_fail "no tests/shell/test-audio-state.sh fails check, rather than skipping it" "no $REPO/tests/shell/test-audio-state.sh"
 
 echo "  -- the engine"
 check_tree eval 'printf "\nif then\n" >> "$REPO/src/jayos-audio"'
@@ -747,6 +870,8 @@ want=$( {
         "f 644 usr/lib/jayos-audio/VERSION" \
         "l 777 usr/bin/jayos-audio" \
         "l 777 usr/bin/jayos-denoise" \
+        "f 755 usr/bin/jayos-audio-state" \
+        "f 755 usr/bin/jayos-equalizer-preset" \
         "f 644 usr/lib/systemd/user/jayos-audio-denoise.service" \
         "f 755 usr/lib/ladspa/libdeep_filter_ladspa.so" \
         "f 644 usr/share/licenses/jayos-audio/LICENSE" \
@@ -848,6 +973,8 @@ same usr/lib/jayos-audio/jayos-audio "$REPO/src/jayos-audio" "the engine is src/
 same usr/lib/jayos-audio/jayos-denoise "$REPO/src/jayos-denoise" "the 1.x command is src/jayos-denoise"
 same usr/lib/jayos-audio/easyeffects-lib.sh "$REPO/src/easyeffects-lib.sh" "its library is src/easyeffects-lib.sh"
 same usr/lib/jayos-audio/VERSION "$REPO/VERSION" "VERSION"
+same usr/bin/jayos-audio-state "$WORK/jayos-audio-state.built" "/usr/bin/jayos-audio-state is the release build"
+same usr/bin/jayos-equalizer-preset "$WORK/jayos-equalizer-preset.built" "/usr/bin/jayos-equalizer-preset is the release build"
 same usr/lib/systemd/user/jayos-audio-denoise.service "$REPO/systemd/jayos-audio-denoise.service" "the unit"
 same usr/share/licenses/jayos-audio/LICENSE "$REPO/LICENSE" "this repository's LICENSE"
 same usr/share/licenses/jayos-audio/THIRD_PARTY.md "$REPO/THIRD_PARTY.md" "THIRD_PARTY.md"
@@ -889,8 +1016,35 @@ package_without "no built .so fails, saying so" "build first" "$SO"
 package_without "no VERSION fails, saying so" "could not install VERSION" "$REPO/VERSION"
 package_without "no unit fails, saying so" "could not install the unit" "$REPO/systemd/jayos-audio-denoise.service"
 package_without "no 1.x command fails, saying so" "could not install jayos-denoise" "$REPO/src/jayos-denoise"
+package_without "no release jayos-audio-state fails, saying so" "could not install jayos-audio-state; build first" \
+    "$TOOLS/target/release/jayos-audio-state"
+package_without "no release jayos-equalizer-preset fails, saying so" "could not install jayos-equalizer-preset; build first" \
+    "$TOOLS/target/release/jayos-equalizer-preset"
 steps package "$PLUG"
 expect_fail "no pkgdir is a usage error" "usage:"
+
+echo
+echo "rust/: the programs' version is the package's"
+
+# The real workspace, not the scratch one: its [workspace.package] version is
+# what both programs and the vendored library carry, and the lock records
+# it for each, so a bump of VERSION that left rust/ behind ships programs
+# that call themselves the release before. Read as text, from the one
+# section that sets it.
+ws_version=$(awk '/^\[/ { s = ($0 == "[workspace.package]") } s && /^version = / { gsub(/"/, "", $3); print $3 }' \
+    "$ROOT/rust/Cargo.toml" 2>/dev/null)
+if [[ -n "$ws_version" && "$ws_version" == "$(cat "$ROOT/VERSION")" ]]; then
+    pass "rust/Cargo.toml's workspace version is VERSION's: $ws_version"
+else
+    bad "rust/Cargo.toml's workspace version is '$ws_version', VERSION says '$(cat "$ROOT/VERSION")'"
+fi
+lock_versions=$(awk '/^name = "(jayos-core|jayos-audio-tools)"$/ { getline; gsub(/"/, "", $3); print $3 }' \
+    "$ROOT/rust/Cargo.lock" 2>/dev/null | sort -u)
+if [[ "$lock_versions" == "$(cat "$ROOT/VERSION")" ]]; then
+    pass "and rust/Cargo.lock records both crates at it"
+else
+    bad "rust/Cargo.lock records the two crates at '$(oneline "$lock_versions")'"
+fi
 
 echo
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"

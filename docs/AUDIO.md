@@ -177,6 +177,36 @@ file; with it, 1024/48000 and 1024; a 10 ms playback was given 128/48000
 either way. JayOS shipped the file in `~/.config` and the helper as
 `hypr/pulse-latency.sh` from 2026-11-07 until this package took them.
 
+## The two programs JayOS's controls read
+
+`jayos-audio-state` and `jayos-equalizer-preset` came here from JayOS, whose
+`rust/crates/jayos-desktop` built them until jayos commit `45256e08`
+(2026-11-11), with the rest of its audio code. They are byte for byte what
+was there (`rust/crates/jayos-audio-tools/README.md` has the sums), built
+from `rust/`, this repository's own Cargo workspace, by `packaging/steps.sh`'s
+`build` and installed in `/usr/bin` by its `package`.
+
+- **`jayos-audio-state`** answers which devices, microphones and playback
+  streams there are, which of each is the default, and -- as
+  `jayos-audio-state master sink|source` -- which node a control acts on
+  when the default is one of EasyEffects' virtual devices, whose own volume
+  reaches nothing. JayOS's volume popup polls it once a second while it is
+  open; its on-screen display, its top bar, its battery popup and its doctor
+  ask `master`. Its `//!` block is its manual, and `contract/audio-state-fields.txt`
+  names every key it prints, for JayOS's popup suite to hold its model to.
+- **`jayos-equalizer-preset`** turns the ten sliders of JayOS's equaliser
+  into the EasyEffects output preset its `music/equalizer.sh` writes and
+  loads: slider n drives band 3n of EasyEffects' 32, and the other 22 sit at
+  unity gain.
+
+The library they share, `rust/crates/jayos-core`, is a vendored copy of the
+five modules of JayOS's they use, held to JayOS's commit by a table of sums
+(its `PROVENANCE.md`, and `tests/shell/test-vendored.sh`): JayOS keeps its
+own for its microphone and camera indicator, which uses all of `pw_route`.
+`packaging/steps.sh check` runs the programs' unit tests and
+`tests/shell/test-audio-state.sh` over the release build, and holds each
+program's linked libraries to `depends=` as it does the plugin's.
+
 ## What has run, and what has only been read
 
 RUN, in containers with PipeWire 1.0.5 and WirePlumber 0.4.17 and no sound

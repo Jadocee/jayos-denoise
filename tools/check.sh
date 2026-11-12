@@ -18,7 +18,11 @@
 #
 # The plugin is not built here. packaging/steps.sh's `check` is what proves a
 # built plugin, and it runs inside a package build, where the plugin is; what
-# this runs is everything that needs no Rust toolchain and no network.
+# this runs is everything that needs no Rust toolchain and no network -- and
+# rust/, this tree's own two programs, where cargo is installed: built, their
+# unit tests, rustfmt's verdict, and then tests/shell/test-audio-state.sh
+# over the build just made. Where cargo is not, that step is "not
+# exercised", and the suite says the same of itself, finding nothing built.
 
 set -uo pipefail
 
@@ -111,6 +115,33 @@ run "shell syntax" syntax
 
 step "contract"
 run "contract" bash tools/contract.sh
+
+# rust/: the build first, so that test-audio-state.sh below has a program to
+# run -- `cargo test` builds the bins' test harnesses, not the bins -- and the
+# suite is pointed at that build, the debug one, rather than left to find a
+# release binary some earlier run left, which may predate the source. --locked,
+# as packaging/steps.sh fetches: a lock this would have to change is a
+# defect, not a refresh. rustfmt's check where rustfmt answers; where it does
+# not, a counted skip, since a machine with cargo and no rustfmt is not one
+# with findings.
+step "rust/: build, tests and format"
+rust_checks() {
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "  no cargo, so rust/ was not built or tested"
+        return 2
+    fi
+    ( cd rust && cargo build --locked --workspace ) || return 1
+    ( cd rust && cargo test --locked --workspace ) || return 1
+    if cargo fmt --version >/dev/null 2>&1; then
+        ( cd rust && cargo fmt --all --check ) || return 1
+        echo "  rust/ is formatted as rust/rustfmt.toml says"
+    else
+        echo "  skip rustfmt not exercised: cargo fmt is not installed"
+    fi
+}
+run "rust/" rust_checks
+[[ -x rust/target/debug/jayos-audio-state ]] \
+    && export JAYOS_AUDIO_STATE_BIN="$ROOT/rust/target/debug/jayos-audio-state"
 
 # nullglob, so a tree with no suites runs none rather than one named by the
 # unexpanded pattern -- which failed as "No such file or directory" -- and the
