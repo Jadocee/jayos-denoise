@@ -1,0 +1,639 @@
+#!/usr/bin/env bash
+#
+# jayos-audio: the audio engine JayOS's shell drives.
+#
+#   jayos-audio denoise status               JSON, one line (keys below)
+#   jayos-audio denoise on [strength]        filter the microphone, and make the
+#                                            filtered source the default input
+#   jayos-audio denoise off                  stop filtering; the microphone it
+#                                            recorded is the default input again
+#   jayos-audio denoise apply on|off [strength] [--force]
+#                                            the login path: on or off as told,
+#                                            waiting for PipeWire; --force is
+#                                            accepted and changes nothing
+#   jayos-audio denoise strength <strength>  change the strength, live if running
+#   jayos-audio denoise input [node.name]    print, or set, the microphone the
+#                                            filter records
+#   jayos-audio denoise config [strength]    print the host configuration
+#   jayos-audio denoise strengths            the strength names, one per line
+#   jayos-audio denoise host                 run the host (the unit's ExecStart)
+#   jayos-audio floor status|apply           whether pipewire-pulse has the
+#                                            recording floor; apply restarts one
+#                                            that predates it where nothing streams
+#   jayos-audio realtime                     how PipeWire's processes are
+#                                            scheduled, and why where they are not
+#                                            real time
+#   jayos-audio easyeffects <verb> [args]    EasyEffects, as the desktop's volume
+#                                            popup, installer and doctor drive it:
+#                                            easyeffects.sh beside this, whose
+#                                            header lists the verbs
+#   jayos-audio version
+#
+# A strength is gentle, balanced or maximum; left out, it is the one last set,
+# or balanced. jayos-denoise, beside this, takes the old engine's verbs.
+#
+# WHY NOT EASYEFFECTS. Until 2.0.0 this package filtered the microphone as an
+# EasyEffects input preset. With EasyEffects' Effects switch on, every
+# recording was moved onto easyeffects_source, through every plugin of the
+# preset, in EasyEffects' one PipeWire data thread -- the thread that also runs
+# every output effect, for the speakers' graph on the speakers' clock -- and the
+# owner's microphone lagged and cut out in calls (docs/AUDIO.md, *Why the
+# microphone left EasyEffects*). Now the filter is a PipeWire filter-chain in a
+# process of its own, as the DeepFilterNet fork documents
+# (ladspa/filter-chain-configs/deepfilter-mono-source.conf) and as omarchy
+# hosts its speaker tuning: its own data thread, real time from rtkit, mono,
+# and EasyEffects is not in the microphone's path at all.
+#
+# THE HOST. jayos-audio-denoise.service runs `jayos-audio denoise host`, which
+# writes the host's configuration -- the strength's controls and the microphone
+# to record -- under $XDG_RUNTIME_DIR and execs `pipewire -c` on it. Its
+# capture side records the microphone by name (target.object), because
+# WirePlumber's fallback for a stream whose default is its own link group is
+# the source with the highest priority.session, which need not be the one
+# chosen (lutils.canLink and find-best-target at WirePlumber 0.5.19, read). Its
+# playback side is the source applications record, jayos_denoise_source, made
+# the default input with default.configured.audio.source -- the key
+# `wpctl set-default` writes, by name, which WirePlumber keeps across restarts.
+# With the unit enabled the source returns at every login and WirePlumber makes
+# it the default again; with it disabled WirePlumber falls back to hardware.
+#
+# STATUS KEYS. The old engine's ten, kept for what reads them, with this
+# engine's meaning -- installed (the plugin and PipeWire's filter-chain module
+# are both there), running (the host is active), plugin, pluginPath, loaded
+# (running, the source is there, and it is the default input), and inputPreset,
+# layout, presetsRoot, presetFile and presetExists, which an EasyEffects preset
+# had and this has not: always "", 0, "", "" and false -- and enabled, strength,
+# input, source, isDefault and host.
+#
+# Nothing here reads a desktop's settings: JayOS's hypr/denoise.sh owns
+# micDenoise and micDenoiseStrength and tells this on or off.
+
+set -uo pipefail
+
+UNIT=jayos-audio-denoise.service
+SOURCE=jayos_denoise_source
+CAPTURE=jayos_denoise_capture
+SELF="$(realpath "${BASH_SOURCE[0]}")"
+HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/jayos-audio"
+STATE_FILE="$STATE_DIR/denoise.state"
+RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/jayos-audio"
+# Where EasyEffects looks for LADSPA plugins when LADSPA_PATH is unset, in its
+# order; the package puts the plugin in the second. JAYOS_AUDIO_PLUGIN names a
+# file outright, for a build tree.
+LADSPA_DIRS="/usr/local/lib/ladspa:/usr/lib/ladspa:/usr/lib64/ladspa"
+PLUGIN_SO=libdeep_filter_ladspa.so
+# How long `on` waits for the source, and `apply`, which may run before the
+# session's PipeWire is up; and where `realtime` reads processes. Each can be
+# set from outside, for the suites.
+WAIT_ON=${JAYOS_AUDIO_WAIT:-10}
+WAIT_APPLY=${JAYOS_AUDIO_WAIT:-20}
+PROC=${JAYOS_AUDIO_PROC:-/proc}
+
+die() { echo "jayos-audio: $*" >&2; exit 1; }
+
+# VERSION beside this file where the package installs it, or the checkout's.
+version_text() {
+    local f
+    for f in "$HERE/VERSION" "$HERE/../VERSION"; do
+        [[ -f "$f" ]] && { head -n 1 "$f"; return 0; }
+    done
+    echo unknown
+}
+
+# ── strengths ────────────────────────────────────────────────────────────────
+#
+# The controls of each strength: attenuation limit, the three thresholds that
+# decide which frames are processed, the headroom in frames this package's
+# patch 0001 holds above the host's quantum, and the post-filter. The same
+# table as 1.x's, which docs/DEEPFILTERNET.md, *Strength*, explains row by row.
+strength_params() { # strength_params <name>  -> ATTEN MIN_T MAX_ERB MAX_DF BUFFER BETA
+    case "$1" in
+        gentle)   ATTEN=24.0;  MIN_T=-15.0; MAX_ERB=30.0; MAX_DF=20.0; BUFFER=2; BETA=0.02 ;;
+        balanced) ATTEN=70.0;  MIN_T=-15.0; MAX_ERB=30.0; MAX_DF=20.0; BUFFER=2; BETA=0.02 ;;
+        maximum)  ATTEN=100.0; MIN_T=-15.0; MAX_ERB=35.0; MAX_DF=35.0; BUFFER=2; BETA=0.05 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The names strength_params knows, in its order, read from its own arms so
+# that a list kept beside the table cannot drift from it.
+strengths() {
+    sed -n '/^strength_params()/,/^}/p' "$SELF" | grep -vE '^[[:space:]]*#' \
+        | sed -n -E 's/^[[:space:]]+([a-z]+)\)[[:space:]].*/\1/p'
+}
+
+strength_known() { [[ -n "$1" ]] && strength_params "$1"; }
+
+# ── state ────────────────────────────────────────────────────────────────────
+#
+# key=value lines: strength, and input, the node.name of the microphone the
+# filter records. Read as text, never sourced.
+state_get() { # state_get <key> [default]
+    local v=""
+    [[ -f "$STATE_FILE" ]] && v=$(sed -n -E "s/^$1=(.*)$/\\1/p" "$STATE_FILE" | tail -n 1)
+    printf '%s' "${v:-${2:-}}"
+}
+state_set() { # state_set <key> <value>
+    local tmp
+    mkdir -p "$STATE_DIR" || return 1
+    tmp=$(mktemp "$STATE_DIR/.denoise.state.XXXXXX") || return 1
+    { [[ -f "$STATE_FILE" ]] && grep -vE "^$1=" "$STATE_FILE"; printf '%s=%s\n' "$1" "$2"; } > "$tmp" \
+        && mv -f -- "$tmp" "$STATE_FILE" || { rm -f -- "$tmp"; return 1; }
+}
+
+current_strength() {
+    local s
+    s=$(state_get strength balanced)
+    strength_known "$s" && printf '%s' "$s" || printf 'balanced'
+}
+
+# ── the plugin ───────────────────────────────────────────────────────────────
+plugin_path() {
+    local d
+    if [[ -n "${JAYOS_AUDIO_PLUGIN:-}" ]]; then
+        [[ -f "$JAYOS_AUDIO_PLUGIN" ]] && { printf '%s\n' "$JAYOS_AUDIO_PLUGIN"; return 0; }
+        return 1
+    fi
+    local IFS=:
+    for d in $LADSPA_DIRS; do
+        [[ -f "$d/$PLUGIN_SO" ]] && { printf '%s\n' "$d/$PLUGIN_SO"; return 0; }
+    done
+    return 1
+}
+
+# PipeWire's filter-chain module, without which the host cannot load a graph.
+filter_chain_module() {
+    local d
+    for d in "${JAYOS_AUDIO_PW_MODULES:-}" /usr/lib/pipewire-0.3 /usr/lib64/pipewire-0.3 \
+             /usr/lib/x86_64-linux-gnu/pipewire-0.3 /usr/lib/aarch64-linux-gnu/pipewire-0.3; do
+        [[ -n "$d" && -f "$d/libpipewire-module-filter-chain.so" ]] && return 0
+    done
+    return 1
+}
+
+# ── the host's configuration ─────────────────────────────────────────────────
+#
+# A PipeWire client that hosts one filter-chain and nothing else. Its own
+# file, not PipeWire's filter-chain.conf, which merges every fragment in
+# filter-chain.conf.d/ and would host a person's other filters here too, as
+# omarchy's filter-chain-host.conf says of the same choice. The modules are
+# the minimum a filter-hosting client needs, from PipeWire's filter-chain.conf.
+#
+# module-rt asks rtkit directly: a portal that started before rtkit was
+# installed reports a real-time budget of zero, which module-rt applies as a
+# hard RLIMIT_RTTIME of 0 while rtkit still makes the thread real time, and the
+# kernel then kills the process as soon as audio runs (omarchy's migration
+# 1790114905, read). The package depends on rtkit, which Arch's pipewire does
+# not.
+#
+# Mono, deep_filter_mono: a microphone is one channel, and EasyEffects fed it
+# to the stereo instance twice over, two models' work for one voice. 48 kHz,
+# the rate the model is built for, which the adapter converts to and from.
+#
+# The source carries a device.description as well as the node.description
+# every filter-chain node gets: pactl lists a source's properties, and a
+# reader that names a device by device.description -- JayOS's
+# jayos-audio-state, pavucontrol's port list -- named this one by its
+# node.name.
+host_config() { # host_config <strength> <input node.name or ""> <plugin path>
+    local strength=$1 input=$2 so=$3 target=""
+    strength_params "$strength" || return 1
+    [[ -n "$input" ]] && target=$(printf '\n        target.object = "%s"' "$input")
+    cat <<EOF
+# Generated by jayos-audio $(version_text) for strength $strength; written again at
+# every start of $UNIT, so an edit here does not last.
+context.properties = {
+    log.level = 0
+}
+context.spa-libs = {
+    audio.convert.* = audioconvert/libspa-audioconvert
+    support.*       = support/libspa-support
+}
+context.modules = [
+    { name = libpipewire-module-rt
+        args = { rtportal.enabled = false }
+        flags = [ ifexists nofail ]
+    }
+    { name = libpipewire-module-protocol-native }
+    { name = libpipewire-module-client-node }
+    { name = libpipewire-module-adapter }
+    { name = libpipewire-module-filter-chain
+        args = {
+            node.description = "Microphone (noise suppressed)"
+            media.name       = "Microphone (noise suppressed)"
+            filter.graph = {
+                nodes = [
+                    {
+                        type   = ladspa
+                        name   = df
+                        plugin = "$so"
+                        label  = deep_filter_mono
+                        control = {
+                            "Attenuation Limit (dB)"            = $ATTEN
+                            "Min processing threshold (dB)"     = $MIN_T
+                            "Max ERB processing threshold (dB)" = $MAX_ERB
+                            "Max DF processing threshold (dB)"  = $MAX_DF
+                            "Min Processing Buffer (frames)"    = $BUFFER
+                            "Post Filter Beta"                  = $BETA
+                        }
+                    }
+                ]
+            }
+            audio.rate     = 48000
+            audio.position = [ MONO ]
+            capture.props = {
+                node.name    = "$CAPTURE"
+                node.passive = true$target
+            }
+            playback.props = {
+                node.name    = "$SOURCE"
+                media.class  = Audio/Source
+                device.description = "Microphone (noise suppressed)"
+            }
+        }
+    }
+]
+EOF
+}
+
+# ── PipeWire, asked ──────────────────────────────────────────────────────────
+#
+# Each answers nothing, and fails, where PipeWire cannot be asked: no session,
+# or the tool not installed. Callers treat that as "not known", not as "no".
+
+# The id of the node whose node.name is $1.
+node_id() {
+    command -v pw-dump >/dev/null 2>&1 || return 1
+    local id
+    id=$(pw-dump 2>/dev/null | jq -r --arg n "$1" \
+        'first(.[] | select(.type == "PipeWire:Interface:Node" and .info.props["node.name"] == $n) | .id) // empty' 2>/dev/null)
+    [[ -n "$id" ]] && printf '%s\n' "$id"
+}
+
+# The node.name in a default.* key of the default metadata, or nothing.
+default_name() { # default_name <key>
+    command -v pw-metadata >/dev/null 2>&1 || return 1
+    pw-metadata -n default 0 "$1" 2>/dev/null \
+        | sed -n -E "s/.*key:'$1' value:'(.*)' type:.*/\\1/p" | tail -n 1 \
+        | jq -r '.name // empty' 2>/dev/null
+}
+
+set_default_source() { # set_default_source <node.name>
+    command -v pw-metadata >/dev/null 2>&1 || return 1
+    pw-metadata -n default 0 default.configured.audio.source "{ \"name\": \"$1\" }" Spa:String:JSON >/dev/null 2>&1
+}
+
+# A source a person records from, not one a filter or EasyEffects made.
+hardware_source() { # hardware_source <node.name>
+    [[ -n "$1" && "$1" != "$SOURCE" && "$1" != easyeffects_source && "$1" != "$CAPTURE" ]]
+}
+
+# The microphone to record: the configured default where it is hardware, then
+# the one recorded last, then the default WirePlumber chose.
+choose_input() {
+    local n
+    n=$(default_name default.configured.audio.source)
+    hardware_source "$n" && { printf '%s' "$n"; return; }
+    n=$(state_get input)
+    hardware_source "$n" && { printf '%s' "$n"; return; }
+    n=$(default_name default.audio.source)
+    hardware_source "$n" && printf '%s' "$n"
+}
+
+unit_active()  { systemctl --user is-active  --quiet "$UNIT" 2>/dev/null; }
+unit_enabled() { systemctl --user is-enabled --quiet "$UNIT" 2>/dev/null; }
+
+wait_for_source() { # wait_for_source <seconds>
+    local i
+    for (( i = 0; i < $1 * 10; i++ )); do
+        node_id "$SOURCE" >/dev/null && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+# ── an EasyEffects preset 1.x left behind ────────────────────────────────────
+#
+# 1.x wrote EasyEffects' input preset `denoise`, which EasyEffects restores at
+# every start. Left with its DeepFilterNet unbypassed it would filter a second
+# time, in the thread this version moved the filter out of. Bypassed, never
+# deleted: the preset is EasyEffects' file now, and a person may have loaded it.
+retire_easyeffects_preset() {
+    local f tmp
+    [[ -f "$HERE/easyeffects-lib.sh" ]] || return 0
+    # shellcheck source=easyeffects-lib.sh
+    source "$HERE/easyeffects-lib.sh" 2>/dev/null || return 0
+    f="$(ee_presets_root 2>/dev/null)/input/denoise.json"
+    jq -e '.input["deepfilternet#0"] | type == "object"' "$f" >/dev/null 2>&1 || return 0
+    if jq -e '.input["deepfilternet#0"].bypass == false' "$f" >/dev/null 2>&1; then
+        tmp=$(mktemp "${f%/*}/.denoise.json.XXXXXX") || return 0
+        if jq '.input["deepfilternet#0"].bypass = true' "$f" > "$tmp" 2>/dev/null && mv -f -- "$tmp" "$f"; then
+            echo "bypassed the DeepFilterNet in EasyEffects' denoise preset, which jayos-denoise 1.x wrote"
+        else
+            rm -f -- "$tmp"
+            return 0
+        fi
+    fi
+    # Reloaded wherever an instance holds it, the file bypassed now or
+    # already: EasyEffects restores its input pipeline from its own database
+    # at start, not from this file, so an instance started after an off that
+    # found nothing running holds the preset un-bypassed whatever the file
+    # says -- 1.x's apply reloaded it for exactly that, and JayOS's popup
+    # still spawns this at every EasyEffects start it makes (the start hook,
+    # easyeffects-lib.sh's ee_on_start, which JayOS points at its denoise.sh).
+    if ee_running 2>/dev/null && [[ "$(ee_current_preset input 2>/dev/null)" == denoise ]]; then
+        ee_load_preset input denoise >/dev/null 2>&1 || true
+    fi
+}
+
+# ── verbs ────────────────────────────────────────────────────────────────────
+denoise_status() {
+    local so="" plugin=false installed=false running=false enabled=false
+    local isdef=false loaded=false present=false def
+    so=$(plugin_path) && plugin=true
+    [[ $plugin == true ]] && filter_chain_module && installed=true
+    unit_active && running=true
+    unit_enabled && enabled=true
+    if [[ $running == true ]] && node_id "$SOURCE" >/dev/null; then present=true; fi
+    def=$(default_name default.audio.source)
+    [[ "$def" == "$SOURCE" ]] && isdef=true
+    [[ $present == true && $isdef == true ]] && loaded=true
+    jq -nc --argjson installed "$installed" --argjson running "$running" \
+        --argjson plugin "$plugin" --arg pluginPath "$so" --argjson loaded "$loaded" \
+        --argjson enabled "$enabled" --arg strength "$(current_strength)" \
+        --arg input "$(state_get input)" --arg source "$SOURCE" --argjson isDefault "$isdef" \
+        '{installed: $installed, running: $running, plugin: $plugin, pluginPath: $pluginPath,
+          layout: 0, presetsRoot: "", presetFile: "", presetExists: false, inputPreset: "",
+          loaded: $loaded, enabled: $enabled, strength: $strength, input: $input,
+          source: $source, isDefault: $isDefault, host: "filter-chain"}'
+}
+
+denoise_on() { # denoise_on <strength> <wait seconds>
+    local strength=$1 input was_input
+    plugin_path >/dev/null || die "the DeepFilterNet plugin is not installed ($PLUGIN_SO in none of $LADSPA_DIRS)"
+    filter_chain_module || die "PipeWire's filter-chain module is not installed"
+    was_input=$(state_get input)
+    input=$(choose_input)
+    state_set strength "$strength" || die "could not write $STATE_FILE"
+    [[ -n "$input" ]] && state_set input "$input"
+    retire_easyeffects_preset
+    # A running host recording the same microphone takes the strength live:
+    # JayOS's popup cycles the strength through `on`, and a restart is half a
+    # second of silence in a call while the model loads. Any other change of
+    # a running host is a restart, since it keeps the microphone it was
+    # started with.
+    if unit_active && [[ "$input" == "$was_input" ]] && node_id "$SOURCE" >/dev/null && live_strength "$strength"; then
+        systemctl --user enable "$UNIT" >/dev/null 2>&1
+    elif unit_active; then
+        systemctl --user restart "$UNIT" 2>/dev/null || die "systemctl could not restart $UNIT"
+        systemctl --user enable "$UNIT" >/dev/null 2>&1
+    else
+        systemctl --user enable --now "$UNIT" >/dev/null 2>&1 || die "systemctl could not start $UNIT"
+    fi
+    wait_for_source "$2" || die "$UNIT started, but $SOURCE did not appear within $2 seconds: journalctl --user -u $UNIT"
+    set_default_source "$SOURCE" || die "$SOURCE is up, but could not be made the default input"
+    echo "noise suppression on ($strength), recording ${input:-the default microphone}"
+}
+
+denoise_off() {
+    local input
+    input=$(state_get input)
+    if [[ "$(default_name default.configured.audio.source)" == "$SOURCE" ]]; then
+        if hardware_source "$input"; then
+            set_default_source "$input" || echo "jayos-audio: could not make $input the default input again" >&2
+        else
+            pw-metadata -n default 0 -d default.configured.audio.source >/dev/null 2>&1 || true
+        fi
+    fi
+    retire_easyeffects_preset
+    systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || {
+        unit_active && die "systemctl could not stop $UNIT"
+    }
+    echo "noise suppression off${input:+, recording $input}"
+}
+
+# The running filter's controls set to a strength's, through its control
+# params, so a call is not cut while the host restarts. 1 where there is no
+# running capture node to set, or PipeWire refuses.
+live_strength() { # live_strength <strength>
+    local id
+    strength_params "$1" || return 1
+    # One line: the controls by the filter-chain's names, node:port.
+    local params="\"df:Attenuation Limit (dB)\" $ATTEN \"df:Min processing threshold (dB)\" $MIN_T"
+    params+=" \"df:Max ERB processing threshold (dB)\" $MAX_ERB \"df:Max DF processing threshold (dB)\" $MAX_DF"
+    params+=" \"df:Min Processing Buffer (frames)\" $BUFFER \"df:Post Filter Beta\" $BETA"
+    command -v pw-cli >/dev/null 2>&1 && id=$(node_id "$CAPTURE") \
+        && pw-cli set-param "$id" Props "{ params = [ $params ] }" >/dev/null 2>&1
+}
+
+# A strength set on a running host, live where it can be. Restarted where
+# that fails.
+denoise_strength() { # denoise_strength <strength>
+    state_set strength "$1" || die "could not write $STATE_FILE"
+    unit_active || { echo "strength $1, from the next start"; return 0; }
+    if live_strength "$1"; then
+        echo "strength $1"
+    else
+        systemctl --user restart "$UNIT" 2>/dev/null || die "systemctl could not restart $UNIT"
+        echo "strength $1 (the host was restarted)"
+    fi
+}
+
+# Recorded at once where the host runs, through the capture stream's
+# target.object -- as pavucontrol moves a stream -- and from the next start.
+denoise_input() { # denoise_input [node.name]
+    local id
+    if [[ -z "${1:-}" ]]; then state_get input; echo; return 0; fi
+    hardware_source "$1" || die "$1 is not a microphone this filter can record"
+    state_set input "$1" || die "could not write $STATE_FILE"
+    if unit_active && id=$(node_id "$CAPTURE"); then
+        pw-metadata "$id" target.object "$1" >/dev/null 2>&1 || die "could not move the filter onto $1"
+    fi
+    echo "recording $1"
+}
+
+denoise_host() {
+    local so conf
+    so=$(plugin_path) || die "the DeepFilterNet plugin is not installed"
+    mkdir -p "$RUN_DIR" || die "could not make $RUN_DIR"
+    conf="$RUN_DIR/denoise.conf"
+    host_config "$(current_strength)" "$(state_get input)" "$so" > "$conf" || die "could not write $conf"
+    exec pipewire -c "$conf"
+}
+
+# ── the recording floor ──────────────────────────────────────────────────────
+#
+# /usr/share/pipewire/pipewire-pulse.conf.d/60-jayos-capture-latency.conf, this
+# package's, holds a recording's cycle to 1024 frames (its header says why).
+# pipewire-pulse reads drop-ins only as it starts, so `floor apply` restarts one
+# that started before the file's current contents -- only where it holds no
+# stream, since a restart drops every PulseAudio client's sound -- and
+# otherwise says what to run. One line, whose first word is what JayOS's
+# install turns into ok or a note: in effect, restarted, waiting, not
+# installed. Moved from JayOS's hypr/pulse-latency.sh with 2.0.0, as it was.
+FLOOR_UNIT=pipewire-pulse.service
+DROPIN="${JAYOS_AUDIO_FLOOR:-/usr/share/pipewire/pipewire-pulse.conf.d/60-jayos-capture-latency.conf}"
+STAMP="$STATE_DIR/floor.stamp"
+HOW="log out and in, or: systemctl --user restart $FLOOR_UNIT"
+
+# The time this file's current contents were first seen, recording it the
+# first time. A stamp that cannot be written leaves the answer "now", every
+# run: a restart of an idle pipewire-pulse each install, which costs nothing,
+# rather than a floor reported in effect that is not.
+changed_at() {
+    local sum line now
+    sum=$(sha256sum < "$DROPIN" | cut -d' ' -f1)
+    # The braces carry the redirection's own error: `read < "$STAMP" 2>/dev/null`
+    # opens the stamp before it silences anything, so with no stamp yet -- a
+    # first install -- bash's "No such file or directory" was this script's
+    # first line, which the install showed as a note.
+    if { IFS= read -r line < "$STAMP"; } 2>/dev/null && [[ "${line%% *}" == "$sum" && "${line#* }" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "${line#* }"
+        return 0
+    fi
+    now=$(date +%s)
+    mkdir -p "${STAMP%/*}" 2>/dev/null \
+        && printf '%s %s\n' "$sum" "$now" > "$STAMP.tmp" 2>/dev/null \
+        && mv -f "$STAMP.tmp" "$STAMP" 2>/dev/null
+    printf '%s\n' "$now"
+}
+
+# When the running pipewire-pulse started, in seconds since the epoch. Status 1
+# when it is not running; 2 when systemd cannot be asked, which says nothing
+# about pipewire-pulse at all. --timestamp=unix (systemd 251; listed in
+# systemctl 255's own --help, read) prints @<seconds>, which needs no parsing
+# of a local date and its zone's abbreviation.
+started_at() {
+    local out key value state="" since=""
+    command -v systemctl >/dev/null 2>&1 || return 2
+    out=$(systemctl --user show "$FLOOR_UNIT" -p ActiveState -p ActiveEnterTimestamp --timestamp=unix 2>/dev/null) || return 2
+    while IFS='=' read -r key value; do
+        case "$key" in
+            ActiveState) state=$value ;;
+            ActiveEnterTimestamp) since=${value#@} ;;
+        esac
+    done <<<"$out"
+    [[ -n "$state" ]] || return 2
+    [[ "$state" == active ]] || return 1
+    [[ "$since" =~ ^[0-9]+$ ]] || return 2
+    printf '%s\n' "$since"
+}
+
+# How many playback and recording streams pipewire-pulse holds; fails where it
+# cannot be asked, which is not the same answer as none.
+streams_open() {
+    local inputs outputs
+    command -v pactl >/dev/null 2>&1 || return 1
+    inputs=$(pactl list short sink-inputs 2>/dev/null) || return 1
+    outputs=$(pactl list short source-outputs 2>/dev/null) || return 1
+    printf '%s\n' "$(( $(grep -c . <<<"$inputs") + $(grep -c . <<<"$outputs") ))"
+}
+
+floor_report() { # floor_report <restart: 0|1>
+    local since started open
+    if [[ ! -f "$DROPIN" ]]; then
+        echo "not installed: no $DROPIN, so a call's recording keeps a 256-frame cycle; reinstalling jayos-audio puts it there"
+        return 0
+    fi
+    since=$(changed_at)
+    started=$(started_at)
+    case $? in
+        1) echo "in effect: $FLOOR_UNIT is not running, and reads the floor when it next starts"; return 0 ;;
+        2) echo "waiting: systemd could not say when $FLOOR_UNIT started, so whether it has the floor is not known; $HOW"; return 0 ;;
+    esac
+    if (( started >= since )); then
+        echo "in effect: $FLOOR_UNIT started after the floor was installed"
+        return 0
+    fi
+    if (( $1 == 0 )); then
+        echo "waiting: $FLOOR_UNIT started before the floor was installed; $HOW"
+        return 0
+    fi
+    if ! open=$(streams_open); then
+        echo "waiting: $FLOOR_UNIT started before the floor was installed, and pactl could not say whether anything is playing or recording; $HOW"
+        return 0
+    fi
+    if (( open > 0 )); then
+        echo "waiting: $FLOOR_UNIT started before the floor was installed, and has $open stream(s) open that a restart would cut; $HOW"
+        return 0
+    fi
+    if systemctl --user restart "$FLOOR_UNIT" 2>/dev/null; then
+        echo "restarted: $FLOOR_UNIT, which had nothing playing or recording, so a call's recording now runs at 1024 frames"
+    else
+        echo "waiting: $FLOOR_UNIT started before the floor was installed and would not restart; $HOW"
+    fi
+}
+
+# ── real time ────────────────────────────────────────────────────────────────
+#
+# Whether each audio process has a thread at SCHED_FIFO or SCHED_RR, and the
+# hard RLIMIT_RTTIME it carries. A process with no real-time thread runs its
+# audio at the scheduler's pleasure, and late cycles are gaps; one with a hard
+# RTTIME of 0 is killed the moment a thread goes real time (omarchy's
+# migrations 1789747667 and 1790114905, read).
+realtime() {
+    local name pid cls limit rtkit=no found=0
+    if systemctl is-active --quiet rtkit-daemon.service 2>/dev/null; then rtkit=active
+    elif command -v rtkitctl >/dev/null 2>&1 || [[ -x /usr/lib/rtkit-daemon ]]; then rtkit=installed
+    fi
+    echo "rtkit: $rtkit"
+    for name in pipewire wireplumber pipewire-pulse easyeffects; do
+        for pid in $(pgrep -u "$(id -u)" -x "$name" 2>/dev/null); do
+            found=1
+            cls=$(ps -L -o cls= -p "$pid" 2>/dev/null | grep -cE '^[[:space:]]*(FF|RR)$')
+            limit=$(sed -n -E 's/^Max realtime timeout[[:space:]]+[^[:space:]]+[[:space:]]+([^[:space:]]+).*/\1/p' \
+                    "$PROC/$pid/limits" 2>/dev/null)
+            local what="$name" cmd
+            cmd=$(tr '\0' ' ' < "$PROC/$pid/cmdline" 2>/dev/null)
+            [[ "$cmd" == *jayos-audio* ]] && what="$name (noise suppression host)"
+            printf '%s %s: %s real-time thread(s), hard RLIMIT_RTTIME %s\n' "$what" "$pid" "$cls" "${limit:-unknown}"
+        done
+    done
+    (( found )) || echo "no PipeWire process is running for this user"
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
+denoise() {
+    local verb=${1:-status} s so; shift || true
+    case "$verb" in
+        status)    denoise_status ;;
+        on)        s=${1:-$(current_strength)}; strength_known "$s" || die "unknown strength '$s'"
+                   denoise_on "$s" "$WAIT_ON" ;;
+        off)       denoise_off ;;
+        apply)     case "${1:-}" in
+                       on)  s=${2:-$(current_strength)}; strength_known "$s" || s=$(current_strength)
+                            denoise_on "$s" "$WAIT_APPLY" ;;
+                       off) denoise_off ;;
+                       *)   die "usage: jayos-audio denoise apply on|off [strength] [--force]" ;;
+                   esac ;;
+        strength)  strength_known "${1:-}" || die "usage: jayos-audio denoise strength $(strengths | paste -sd'|')"
+                   denoise_strength "$1" ;;
+        input)     denoise_input "${1:-}" ;;
+        config)    s=${1:-$(current_strength)}; strength_known "$s" || die "unknown strength '$s'"
+                   so=$(plugin_path) || so="/usr/lib/ladspa/$PLUGIN_SO"
+                   host_config "$s" "$(state_get input)" "$so" ;;
+        strengths) strengths ;;
+        host)      denoise_host ;;
+        *)         die "usage: jayos-audio denoise status|on|off|apply|strength|input|config|strengths|host" ;;
+    esac
+}
+
+case "${1:-}" in
+    denoise)  shift; denoise "$@" ;;
+    floor)    case "${2:-}" in
+                  status) floor_report 0 ;;
+                  apply)  floor_report 1 ;;
+                  *)      echo "usage: jayos-audio floor status|apply" >&2; exit 2 ;;
+              esac ;;
+    realtime) realtime ;;
+    # EasyEffects' verbs are their own script, moved here from JayOS whole
+    # (its header says when): exec'd, so its exit status and its two streams
+    # are the caller's, as they were when the desktop ran it itself.
+    easyeffects)
+              shift
+              [[ -f "$HERE/easyeffects.sh" ]] || die "easyeffects.sh is not beside $SELF"
+              exec bash "$HERE/easyeffects.sh" "$@" ;;
+    version)  version_text ;;
+    *)        echo "usage: jayos-audio denoise ...|floor status|apply|realtime|easyeffects <verb>|version" >&2; exit 1 ;;
+esac

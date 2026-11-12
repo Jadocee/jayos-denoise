@@ -10,8 +10,9 @@
 # not the same answer as "current" and must not be read as one.
 #
 # Every file but README.md is made here, by RUNNING the engine and reading
-# the library, never written by hand: a contract written by hand would be a
-# second description of the code, and the two would drift. JayOS vendors a
+# the library and jayos-audio-state's source, never written by hand: a
+# contract written by hand would be a second description of the code, and
+# the two would drift. JayOS vendors a
 # copy of this directory with each file's sha256 (its
 # tools/fixtures/jayos-denoise-contract/PROVENANCE.md), and its suites hold
 # its wrapper, its popup and its doctor to the copy.
@@ -19,9 +20,12 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENGINE="$ROOT/src/jayos-denoise"
+ENGINE="$ROOT/src/jayos-audio"
+SHIM="$ROOT/src/jayos-denoise"
 LIB="$ROOT/src/easyeffects-lib.sh"
+EE="$ROOT/src/easyeffects.sh"
 STEPS="$ROOT/packaging/steps.sh"
+AUDIO_STATE="$ROOT/rust/crates/jayos-audio-tools/src/bin/jayos-audio-state.rs"
 OUT="$ROOT/contract"
 
 command -v jq >/dev/null 2>&1 || { echo "contract not exercised: jq is not installed" >&2; exit 2; }
@@ -70,67 +74,75 @@ path_without_easyeffects() {
 }
 
 generate() { # generate <dir>
-    local dir=$1 s names keys dirs noee
+    local dir=$1 s names keys dirs mark
+    printf '2\n' > "$dir/VERSION"
 
-    # The schema of everything below. A reader refuses a newer one.
-    printf '1\n' > "$dir/VERSION"
-
-    # The verbs, as the engine's own usage says them.
-    { header "The engine's command language, one form per line." "jayos-denoise's usage"
-      "$ENGINE" --no-such-verb 2>&1 >/dev/null | sed -E 's/^(usage:|      ) //'
+    # The forms each command takes, from the usage block at the head of its
+    # file: the first column of every `#   <command> ` line.
+    forms() { # forms <file> <command>
+        sed -n -E "s/^#   ($2 [^ ].*[^ ])  +.*$/\\1/p; s/^#   ($2 [^ ]+( [^ ]+)*)$/\\1/p" "$1" \
+            | sed -E 's/[[:space:]]+$//' | awk '!seen[$0]++'
+    }
+    { header "jayos-denoise's forms, the 1.x verbs JayOS's denoise.sh hands on, one per line." "src/jayos-denoise's usage block"
+      forms "$SHIM" jayos-denoise
     } > "$dir/commands.txt"
+    { header "jayos-audio's forms, one per line." "src/jayos-audio's usage block"
+      forms "$ENGINE" jayos-audio
+    } > "$dir/engine-commands.txt"
+    # The verbs `jayos-audio easyeffects` hands on, as the desktop may call
+    # them: its hypr/easyeffects.sh passes every word it is given, so these
+    # are what its popup, installer and doctor can rely on.
+    { header "jayos-audio easyeffects's verbs, one per line." "src/easyeffects.sh's usage block"
+      forms "$EE" easyeffects.sh | sed 's/^easyeffects\.sh /jayos-audio easyeffects /'
+    } > "$dir/easyeffects-commands.txt"
 
-    names=$("$ENGINE" strengths) || die "jayos-denoise strengths failed"
-    { header "The strength names, in order. Any other name is refused for on." "jayos-denoise strengths"
+    names=$("$ENGINE" denoise strengths) || die "jayos-audio denoise strengths failed"
+    { header "The strength names, in order. Any other name is refused for on." "jayos-audio denoise strengths"
       printf '%s\n' "$names"
     } > "$dir/strengths.txt"
 
+    # One host configuration per strength, with the plugin where the package
+    # installs it and no microphone chosen: what a first start writes. A
+    # plugin path that names no file makes the engine fall back to that path,
+    # so the output is the same on every machine.
     for s in $names; do
-        # Byte for byte what `set` writes, not re-serialised: jq before 1.7
-        # prints 24.0 as 24, so a contract passed through it would differ by
-        # the jq that made it rather than by the code.
-        "$ENGINE" preset "$s" > "$dir/preset.$s.json" || die "preset $s failed"
-        "$ENGINE" preset "$s" off > "$dir/preset.$s.off.json" || die "preset $s off failed"
+        env -i PATH="$PATH" HOME="$WORK" XDG_STATE_HOME="$WORK/state" JAYOS_AUDIO_PLUGIN="$WORK/none" \
+            "$ENGINE" denoise config "$s" > "$dir/config.$s.conf" || die "jayos-audio denoise config $s failed"
     done
 
-    # The keys of `status`, in its order. Run with no EasyEffects on PATH,
-    # where every key is still printed: a reader may rely on every key here,
-    # and on no key that is not.
-    noee=$(path_without_easyeffects) || die "could not make a PATH without easyeffects under $WORK"
-    keys=$(env -i PATH="$noee" HOME="$WORK" "$ENGINE" status \
-           | jq -r 'keys_unsorted[]') || die "jayos-denoise status failed"
-    [[ -n "$keys" ]] || die "jayos-denoise status printed no keys"
-    { header "The keys of jayos-denoise status, in its order." "jayos-denoise status"
+    # With no session to ask: every key is printed whatever the answers are.
+    keys=$(env -i PATH="$PATH" HOME="$WORK" XDG_STATE_HOME="$WORK/state" "$ENGINE" denoise status \
+           | jq -r 'keys_unsorted[]') || die "jayos-audio denoise status failed"
+    [[ -n "$keys" ]] || die "jayos-audio denoise status printed no keys"
+    { header "The keys of jayos-audio denoise status, in its order." "jayos-audio denoise status"
       printf '%s\n' "$keys"
     } > "$dir/status-keys.txt"
 
-    # The names a desktop writes into its own code: the preset's name, the
-    # plugin's file and its key inside the preset, where EasyEffects looks
-    # for the file when LADSPA_PATH is unset, and a string the plugin this
-    # package builds carries and the fork's does not. That last is a piece
-    # of the line the headroom patch logs when it primes its delay -- the
-    # words between the delay's placeholder and the quantum's, which rustc
-    # keeps whole in the .so as a literal of the format string -- so a
-    # desktop can tell the two plugins apart by reading the installed file,
-    # with nothing started. jayos's doctor does.
-    dirs=$(sed -n -E 's/.*\|\| dirs="([^"]*)".*/\1/p' "$LIB")
-    [[ -n "$dirs" && "$dirs" != *$'\n'* ]] || die "could not read one default LADSPA list out of $LIB"
+    dirs=$(sed -n -E 's/^LADSPA_DIRS="([^"]*)"$/\1/p' "$ENGINE")
+    [[ -n "$dirs" && "$dirs" != *$'\n'* ]] || die "could not read one LADSPA_DIRS out of $ENGINE"
     mark=$(cat "$ROOT"/packaging/patches/*.patch 2>/dev/null \
            | sed -n -E 's/^\+.*"DF \{\} \| Holding \{:\.1\}([^{"]+) \{\}.*$/\1/p')
     [[ -n "$mark" && "$mark" != *$'\n'* ]] \
         || die "could not read one headroom line out of packaging/patches/ (\"DF {} | Holding {:.1}ms for a quantum of {}\")"
+    value() { # value <NAME> -- the literal NAME=... line of the engine
+        local v
+        v=$(sed -n -E "s/^$1=\"?([^\"]*)\"?$/\\1/p" "$ENGINE" | head -n 1)
+        [[ -n "$v" ]] || die "could not read $1 out of $ENGINE"
+        printf '%s' "$v"
+    }
     { header "Names a desktop may write into its own code, one 'name value' per line." \
-             "the engine, its library, its presets and its patches"
-      printf 'preset-name %s\n' "$(sed -n -E 's/^PRESET_NAME="([^"]+)"$/\1/p' "$ENGINE")"
-      printf 'plugin-file %s\n' "$(bash -c 'source "$1"; printf %s "$EE_PLUGIN_SO"' _ "$LIB")"
-      printf 'plugin-key %s\n' "$(jq -r '.input.plugins_order[0]' "$dir/preset.balanced.json")"
+             "the engine and its patches"
+      printf 'plugin-file %s\n' "$(value PLUGIN_SO)"
       printf 'ladspa-dirs %s\n' "$dirs"
       printf 'headroom-mark %s\n' "$mark"
+      printf 'source-name %s\n' "$(value SOURCE)"
+      printf 'capture-name %s\n' "$(value CAPTURE)"
+      printf 'unit-name %s\n' "$(value UNIT)"
+      printf 'floor-file %s\n' "$(sed -n -E 's/^DROPIN="\$\{JAYOS_AUDIO_FLOOR:-([^}]*)\}"$/\1/p' "$ENGINE")"
+      printf 'retired-preset %s\n' denoise
     } > "$dir/facts.txt"
+    grep -q '^floor-file /' "$dir/facts.txt" || die "could not read the floor's path out of $ENGINE"
 
-    # The verbs of packaging/steps.sh, which JayOS's recipe calls: one per
-    # arm of its dispatch, with as many arguments as the arm passes on --
-    # "${2:-}" is the plugin tree, "${3:-}" the package directory.
     { header "The verbs of packaging/steps.sh, which JayOS's recipe calls, with their arguments." \
              "packaging/steps.sh's dispatch"
       sed -n '/^case "\${1:-}" in$/,/^esac$/p' "$STEPS" \
@@ -143,6 +155,28 @@ generate() { # generate <dir>
             done
     } > "$dir/steps.txt"
     [[ $(grep -vc '^#' "$dir/steps.txt") -gt 0 ]] || die "read no verbs out of $STEPS"
+
+    # The keys jayos-audio-state prints: the fields of the three structs
+    # serde serialises, in declaration order, which is serde's output order.
+    # Read off the source rather than off a run, because a run needs a build
+    # and this script needs only jq; tests/shell/test-audio-state.sh holds
+    # this file to what the built program actually prints. A serde attribute
+    # anywhere in the file could rename a field or change the order, which
+    # this reading would not see, so one is refused rather than read past.
+    [[ -f "$AUDIO_STATE" ]] || die "no $AUDIO_STATE to read jayos-audio-state's keys from"
+    ! grep -qE '^[[:space:]]*#\[serde' "$AUDIO_STATE" \
+        || die "$AUDIO_STATE has a #[serde(...)] attribute, which this cannot read the keys past"
+    local st obj fields
+    { header "The keys jayos-audio-state prints, '<object> <key>' a line, in its order: state is the bare answer, node each object of its three lists, master the answer to 'master sink|source'." \
+             "the State, Node and Master structs of rust/crates/jayos-audio-tools/src/bin/jayos-audio-state.rs"
+      for st in State Node Master; do
+          obj=${st,,}
+          fields=$(sed -n "/^struct $st {\$/,/^}\$/p" "$AUDIO_STATE" \
+                   | sed -n -E 's/^    ([a-z_][a-z0-9_]*): .*,$/\1/p')
+          [[ -n "$fields" ]] || die "read no fields of struct $st out of $AUDIO_STATE"
+          sed "s/^/$obj /" <<<"$fields"
+      done
+    } > "$dir/audio-state-fields.txt"
 }
 
 GEN="$WORK/contract"

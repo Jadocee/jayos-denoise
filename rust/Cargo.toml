@@ -1,0 +1,49 @@
+# The two Rust programs jayos-audio ships beside its shell engine:
+# jayos-audio-state, which tells JayOS's volume popup, OSD, top bar and doctor
+# which devices and streams there are and which node a control acts on, and
+# jayos-equalizer-preset, which builds the EasyEffects output preset JayOS's
+# equaliser loads. They moved here from JayOS's rust/ workspace (its
+# crates/jayos-desktop) at jayos commit 45256e08, with the audio code that
+# moved into this package with 2.0.0.
+#
+# TWO CRATES. jayos-core is a vendored copy of the five modules of JayOS's
+# shared library the two programs use (crates/jayos-core/PROVENANCE.md says
+# which, and why a copy); jayos-audio-tools holds the programs. Kept as two so
+# that the copy stays byte for byte what JayOS has -- the programs name it
+# `jayos_core::`, as they did there -- and a refresh is a copy of files, not an
+# edit of the programs.
+[workspace]
+# "3", as JayOS's workspace has it: the MSRV-aware resolver, which locks no
+# dependency newer than the rust-version below allows.
+resolver = "3"
+members = [
+    "crates/jayos-core",
+    "crates/jayos-audio-tools",
+]
+
+[workspace.package]
+# The package's version (VERSION at the repository's root); test-steps.sh
+# holds the two equal.
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+jayos-core = { path = "crates/jayos-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+# JayOS's release settings, for the reason it gives: these run from a UI
+# process spawn on every poll, so the speed is the point, and they are built
+# once per package build, so a slower build costs nothing anyone waits for
+# twice. panic = "abort" because nothing catches a panic -- a helper that
+# fails exits non-zero and the caller sees it -- and strip because the
+# useful diagnostics are the ones the programs print themselves.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
