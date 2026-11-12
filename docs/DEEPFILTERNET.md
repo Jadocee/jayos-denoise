@@ -8,9 +8,18 @@ disagree, the code is current: `packaging/steps.sh` holds every build flag,
 every proof and the file list; the `_commit=` line of `packaging/arch/PKGBUILD`
 is the pin, and `bash packaging/steps.sh pin` prints it;
 `packaging/patches/` holds what this package changes in the fork, each patch
-with its reason in its header; `strength_params()` in `src/jayos-denoise`
+with its reason in its header; `strength_params()` in `src/jayos-audio`
 holds the numbers behind each strength, and `tests/shell/test-engine.sh`
 fails unless the table under *Strength* states them.
+
+**Since 2.0.0 the plugin is not in EasyEffects.** jayos-audio runs it in a
+PipeWire filter-chain of its own, mono, through its `deep_filter_mono` label,
+and `docs/AUDIO.md` is that path's account: why, how the host is wired, what
+has run. What is said below about the plugin -- the fork, the patches, the
+model, the strengths' numbers, the build -- holds as it did. What is said
+about an EasyEffects input preset, its socket, `set`, `apply`, bypassing and
+the popup is 1.x's, and is history; the italic notes mark the places that
+matter most.
 
 This preface is current on 2026-10-04, *Dropouts, and the headroom that
 stops them*, after it, on 2026-10-17, and *The worker thread, ended with its
@@ -360,6 +369,12 @@ string `DeepFilterNet3_onnx` twice and `DeepFilterNet3_ll_onnx` never.
 
 ### Strength
 
+*[In 2.0.0 the same six numbers are the filter-chain node's controls, by the
+plugin's port names, in the configuration `jayos-audio denoise config
+<strength>` prints, and `jayos-audio denoise strength` sets them on the
+running node. The table is held to `strength_params()` in `src/jayos-audio`
+by `tests/shell/test-engine.sh`.]*
+
 `hypr/denoise.sh` writes one input preset, `denoise.json`, from a strength
 name. The knobs are the plugin's own control ports in the units EasyEffects
 passes through unchanged, and the numbers are `strength_params()` in that
@@ -421,6 +436,12 @@ can listen. They are meant to be told apart in a recording, and the popup's
 strength button cycles through them so that recording is one click per row.
 
 ### Latency
+
+*[In 2.0.0 there is no EasyEffects on the way: the capture side and the
+source are one filter-chain node's two ends, in one cycle. What stays is the
+model's delay and the plugin's queue above it, 50.7 ms at a quantum of 1024,
+and the recording floor's 21.3 ms where a PulseAudio client asks for less
+(`docs/AUDIO.md`).]*
 
 The full model's algorithmic delay is about **40 ms**: the 20 ms analysis
 window plus the two 10 ms frames of lookahead. The low-latency model, with no
@@ -594,11 +615,13 @@ open.
 
 *[The table's steps are `packaging/steps.sh`'s now: `prepare()` calls its
 `checkout` and `fetch`, the other three the verb of the same name. `check`
-also checks the engine -- it parses, it names its strengths, and every preset
-it would write is JSON -- and `package` installs, beside the `.so`, the
-engine and its library, the contract, this repository's `LICENSE` and
-`THIRD_PARTY.md` with the fork's three licence files, and this document with
-`README.md`. `depends=` is no longer the two packages `check()`'s row names:
+also checks the engine -- the two commands and the library parse, the two
+commands name the same strengths, and the host configuration for each is
+balanced and names the mono label, the source and an attenuation -- and
+`package` installs, beside the `.so`, both commands and the library, the
+host's unit, the drop-ins under `share/`, the contract, this repository's
+`LICENSE` and `THIRD_PARTY.md` with the fork's three licence files, and this
+document with `README.md` and `docs/AUDIO.md`. `depends=` is no longer the two packages `check()`'s row names:
 glibc and gcc-libs are the plugin's share, and the rest are the engine's,
 each tied by `tests/shell/test-packaging.sh` to a command the engine or its
 library runs. The preface has the times measured on 2026-10-03.]*
@@ -635,6 +658,13 @@ every login, whether noise suppression is on or off; what the setting adds is
 the filter, its latency and its core.
 
 ### Checking it on the machine
+
+*[These are 1.x's checks, through EasyEffects. 2.0.0's are under the same
+heading in `docs/AUDIO.md`. Of these, the model's line now goes to
+`journalctl --user -u jayos-audio-denoise.service` once
+`systemctl --user set-environment RUST_LOG=debug` has given the user manager
+the variable and the unit has been restarted, and the recordings are made
+from `jayos_denoise_source`.]*
 
 None of this could be run where it was written, so these are the checks, in
 the order that finds the most common problem first.

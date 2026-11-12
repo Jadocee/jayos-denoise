@@ -79,9 +79,11 @@ skip() { printf '  skip %s\n' "$1"; SKIP=$((SKIP + 1)); }
 
 # ── copies ───────────────────────────────────────────────────────────────────
 
-# This tree without .git and without what makepkg leaves in packaging/arch --
-# the fork's clone and its target/ run to gigabytes, and contract.sh and
-# check.sh read none of it.
+# This tree without .git, without what makepkg leaves in packaging/arch --
+# the fork's clone and its target/ run to gigabytes -- and without rust/target,
+# the programs' build, about 400 MB after one debug and one release build
+# (measured on 2026-11-12), copied again for every case below. contract.sh
+# and check.sh read none of it.
 # A tree without the two scripts under test is a defect in the tree (1); a
 # copy that came out without them is this suite failing to start (2).
 for f in tools/contract.sh tools/check.sh; do
@@ -90,7 +92,7 @@ done
 PRISTINE="$WORK/pristine"
 mkdir -p "$PRISTINE"
 ( cd "$ROOT" && find . \( -path ./.git -o -path ./packaging/arch/src -o -path ./packaging/arch/pkg \
-        -o -path ./packaging/arch/DeepFilterNetPlus -o -name '*.pkg.tar*' \) -prune \
+        -o -path ./packaging/arch/DeepFilterNetPlus -o -name '*.pkg.tar*' -o -path ./rust/target \) -prune \
         -o \( -type f -o -type l \) -print0 \
   | xargs -0 cp -a --parents -t "$PRISTINE" )
 [[ -f "$PRISTINE/tools/contract.sh" && -f "$PRISTINE/tools/check.sh" ]] || {
@@ -179,27 +181,25 @@ else
     bad "contract/ holds ${#GENERATED[@]} generated files; the cases below would examine almost nothing"
 fi
 
-# A NUMBER behind one strength: exactly that strength's two presets, and the
-# diff shows the new number. 31.5 rather than an integer because a jq before
+# A NUMBER behind one strength: exactly that strength's host configuration,
+# and the diff shows the new number. 31.5 rather than an integer because a jq before
 # 1.7 prints 31.0 as 31, and the cases below grep for the number as written.
 D=$(fresh)
-if mutate "$D/src/jayos-denoise" 's/^([[:space:]]+gentle\)[[:space:]]+ATTEN=)[0-9.]+/\131.5/'; then
+if mutate "$D/src/jayos-audio" 's/^([[:space:]]+gentle\)[[:space:]]+ATTEN=)[0-9.]+/\131.5/'; then
     contract "$D"
-    expect "a changed number in strength_params names gentle's two presets, and nothing else" 1 \
-        "contract/preset.gentle.json differs from what the code produces
-contract/preset.gentle.off.json differs from what the code produces"
+    expect "a changed number in strength_params names gentle's configuration, and nothing else" 1 \
+        "contract/config.gentle.conf differs from what the code produces"
     says "and shows the new number" "31.5"
     says "and says how to repair it" "regenerate with tools/contract.sh --write"
 fi
 
-# A NEW STRENGTH: its two presets are missing, and the list differs.
+# A NEW STRENGTH: its configuration is missing, and the list differs.
 D=$(fresh)
-if mutate "$D/src/jayos-denoise" '/^[[:space:]]+maximum\)/a\        extreme)  ATTEN=100.0; MIN_T=-15.0; MAX_ERB=35.0; MAX_DF=35.0; BUFFER=1; BETA=0.05 ;;'; then
-    if grep -qx extreme <<<"$(bash "$D/src/jayos-denoise" strengths 2>/dev/null)"; then
+if mutate "$D/src/jayos-audio" '/^[[:space:]]+maximum\)/a\        extreme)  ATTEN=100.0; MIN_T=-15.0; MAX_ERB=35.0; MAX_DF=35.0; BUFFER=1; BETA=0.05 ;;'; then
+    if grep -qx extreme <<<"$(bash "$D/src/jayos-audio" denoise strengths 2>/dev/null)"; then
         contract "$D"
-        expect "a new strength arm names its two missing presets and the changed list" 1 \
-            "contract/preset.extreme.json is missing
-contract/preset.extreme.off.json is missing
+        expect "a new strength arm names its missing configuration and the changed list" 1 \
+            "contract/config.extreme.conf is missing
 contract/strengths.txt differs from what the code produces"
     else
         bad "the engine does not list the added arm; this case examined nothing"
@@ -227,6 +227,28 @@ if mutate "$D/packaging/patches/0001-ladspa-hold-headroom-above-the-host-quantum
         pass "patches that log no priming line stop the contract, saying what was looked for"
     else
         bad "patches with no priming line: exit $STATUS, and: $(head -3 <<<"$OUT" | tr '\n' ';')"
+    fi
+fi
+
+# JAYOS-AUDIO-STATE'S KEYS are read off its structs: a field renamed in Node
+# names audio-state-fields.txt and nothing else, and a serde attribute, which
+# could rename or reorder what the program prints, stops the contract rather
+# than being read past.
+AS_SRC=rust/crates/jayos-audio-tools/src/bin/jayos-audio-state.rs
+D=$(fresh)
+if mutate "$D/$AS_SRC" 's/^    is_default: bool,$/    is_active: bool,/'; then
+    contract "$D"
+    expect "a field of jayos-audio-state's Node renamed names audio-state-fields.txt, and nothing else" 1 \
+        "contract/audio-state-fields.txt differs from what the code produces"
+    says "and shows the new key" "node is_active"
+fi
+D=$(fresh)
+if mutate "$D/$AS_SRC" 's/^struct Master \{$/#[serde(rename_all = "camelCase")]\nstruct Master {/'; then
+    contract "$D"
+    if [[ "$STATUS" == 1 ]] && grep -qF "#[serde(...)] attribute" <<<"$OUT"; then
+        pass "a serde attribute in jayos-audio-state stops the contract, saying why"
+    else
+        bad "a serde attribute: exit $STATUS, and: $(head -3 <<<"$OUT" | tr '\n' ';')"
     fi
 fi
 
@@ -264,7 +286,7 @@ expect "README.md is the one hand-written file: editing it is not staleness" 0 "
 
 # --WRITE repairs every kind of wrong above at once, and keeps README.md.
 D=$(fresh)
-if mutate "$D/src/jayos-denoise" 's/^([[:space:]]+gentle\)[[:space:]]+ATTEN=)[0-9.]+/\131.5/'; then
+if mutate "$D/src/jayos-audio" 's/^([[:space:]]+gentle\)[[:space:]]+ATTEN=)[0-9.]+/\131.5/'; then
     echo "a note" > "$D/contract/notes.txt"
     rm -f "$D/contract/facts.txt"
     echo "volume" >> "$D/contract/status-keys.txt"
@@ -290,19 +312,19 @@ if mutate "$D/src/jayos-denoise" 's/^([[:space:]]+gentle\)[[:space:]]+ATTEN=)[0-
     else
         bad "facts.txt or status-keys.txt differs from the pristine copy's after --write"
     fi
-    if grep -q '"attenuation-limit": 31.5' "$D/contract/preset.gentle.json"; then
-        pass "and gentle's preset carries the new number"
+    if grep -qE '"Attenuation Limit \(dB\)"[[:space:]]+= 31\.5$' "$D/contract/config.gentle.conf"; then
+        pass "and gentle's configuration carries the new number"
     else
-        bad "contract/preset.gentle.json after --write does not carry 31.5"
+        bad "contract/config.gentle.conf after --write does not carry 31.5"
     fi
 fi
 
 # --WRITE REMOVES what the code no longer produces.
 D=$(fresh)
-if mutate "$D/src/jayos-denoise" '/^[[:space:]]+maximum\)/d'; then
+if mutate "$D/src/jayos-audio" '/^[[:space:]]+maximum\)/d'; then
     contract "$D" --write
-    if [[ "$STATUS" == 0 && ! -e "$D/contract/preset.maximum.json" && ! -e "$D/contract/preset.maximum.off.json" ]]; then
-        pass "--write after a strength is removed deletes its two presets"
+    if [[ "$STATUS" == 0 && ! -e "$D/contract/config.maximum.conf" ]]; then
+        pass "--write after a strength is removed deletes its configuration"
     else
         bad "--write after removing maximum: exit $STATUS, and $(ls "$D/contract" | tr '\n' ' ')"
     fi
@@ -316,15 +338,16 @@ fi
 # A GENERATOR THAT CANNOT RUN is a failure, and clobbers nothing: generate()
 # dies before --write's branch is reached, so the committed contract stays.
 D=$(fresh)
-rm -f "$D/src/easyeffects-lib.sh"
+# An engine that exits 3 at once: it lists no strengths, prints no status.
+printf '#!/usr/bin/env bash\nexit 3\n' > "$D/src/jayos-audio"
 cp -a "$D/contract" "$WORK/contract.before"
 contract "$D"
 if [[ "$STATUS" == 1 ]]; then
     pass "an engine that cannot run fails the compare (1), not 'current' and not 'could not run'"
 else
-    bad "an engine without its library: contract.sh exited $STATUS"
+    bad "an engine that cannot run: contract.sh exited $STATUS"
 fi
-says "and says which step failed" "contract.sh: jayos-denoise strengths failed"
+says "and says which step failed" "contract.sh: jayos-audio denoise strengths failed"
 contract "$D" --write
 if [[ "$STATUS" == 1 ]] && same_tree "$WORK/contract.before" "$D/contract"; then
     pass "--write with that engine fails too, and leaves contract/ exactly as it was"
@@ -482,6 +505,7 @@ only_syntax_error_none() {
 scripts_in() {
     local n
     n=$(find "$1" -type f -name '*.sh' | wc -l)
+    [[ -f "$1/src/jayos-audio" ]] && n=$((n + 1))
     [[ -f "$1/src/jayos-denoise" ]] && n=$((n + 1))
     [[ -f "$1/packaging/arch/PKGBUILD" ]] && n=$((n + 1))
     printf '%s' "$n"
@@ -594,8 +618,9 @@ else
         status_is "inside git, untracked good, ignored broken and tracked-deleted scripts: exit 0" 0
         only_syntax_error_none
         # The index's .sh files, less the deleted one, plus the untracked
-        # one, plus the engine and the recipe; not the ignored one.
-        want=$(( $(git -C "$D" ls-files '*.sh' | wc -l) - 1 + 1 + 2 ))
+        # one, plus the engine, jayos-denoise beside it and the recipe; not
+        # the ignored one.
+        want=$(( $(git -C "$D" ls-files '*.sh' | wc -l) - 1 + 1 + 3 ))
         got=$(sed -n -E 's/^  ([0-9]+) files parse$/\1/p' <<<"$OUT")
         if [[ "$got" == "$want" ]]; then
             pass "and it parsed the $want scripts git knows of, untracked included"
@@ -613,6 +638,25 @@ else
     else
         bad "could not commit the copy into a scratch repository; the inside-git cases examined nothing"
     fi
+fi
+
+# CHECK.SH'S rust/ STEP, read rather than run: running it means a cargo build
+# in every scratch copy, which no case here can afford, and a fake cargo
+# would prove only that the fake was called. So its code lines, comments
+# stripped -- a comment naming `cargo test` is not a run of it -- must build,
+# test and format-check rust/ locked, and the step must be one check.sh runs.
+RUST_STEP=$(sed -n '/^rust_checks() {$/,/^}$/p' "$ROOT/tools/check.sh" | grep -vE '^[[:space:]]*#')
+for want in 'cargo build --locked --workspace' 'cargo test --locked --workspace' 'cargo fmt --all --check'; do
+    if grep -qF -- "$want" <<<"$RUST_STEP"; then
+        pass "check.sh's rust/ step runs $want"
+    else
+        bad "check.sh's rust/ step does not run $want"
+    fi
+done
+if grep -vE '^[[:space:]]*#' "$ROOT/tools/check.sh" | grep -qx 'run "rust/" rust_checks'; then
+    pass "and check.sh runs that step"
+else
+    bad "check.sh defines a rust/ step it never runs"
 fi
 
 echo

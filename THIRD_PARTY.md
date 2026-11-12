@@ -14,7 +14,9 @@ matters for what a reader may do with each:
   code relies on. Facts are cited, not copied; no code from these projects is
   in this repository.
 
-No file here is vendored from another project. Two are changes to another
+One file here is adapted from another project:
+`share/wireplumber/wireplumber.conf.d/50-alsa-soft-mixer.conf`, whose rule is
+omarchy's (its section below). Two are changes to another
 project's files: `packaging/patches/0001-ladspa-hold-headroom-above-the-host-quantum.patch`
 and `packaging/patches/0002-ladspa-stop-and-join-the-worker-on-drop.patch`,
 whose context lines quote the fork's `ladspa/src/lib.rs` (next section); the
@@ -138,16 +140,34 @@ licence files above. `docs/DEEPFILTERNET.md` cites it for facts: its release
 and commit dates, its plugin's blocking real-time callback and issue #661,
 and the paper behind the model (Schröter et al.).
 
+## basecamp/omarchy (MIT) -- one rule adapted, the rest cited
+
+`share/wireplumber/wireplumber.conf.d/50-alsa-soft-mixer.conf`'s rule -- every
+`alsa_card.*` device gets `api.alsa.soft-mixer = true` -- is omarchy's
+`default/wireplumber/wireplumber.conf.d/alsa-soft-mixer.conf`, by way of
+JayOS, which took it with its own comment and a narrower account of
+Bluetooth; read against omarchy's default branch on 2026-11-11. omarchy's
+`LICENSE` is the MIT licence, "Copyright (c) David Heinemeier Hansson". The
+rest is cited, not copied: `share/pipewire/client.conf.d/60-jayos-audio-rt.conf`
+and its JACK twin set the one key omarchy's `etc/pipewire/client.conf.d/` and
+`jack.conf.d/50-omarchy-rtkit.conf` set, for the reason its migrations
+`1789747667` and `1790114905` and its issue #9390 give; the host's unit
+follows the shape of its `default/systemd/user/omarchy-speaker-tuning.service`
+(`docs/AUDIO.md`).
+
 ## Facts and quoted prose from other projects (no code copied)
 
 | Project | Licence | What is cited or quoted |
 |---|---|---|
 | [wwmm/easyeffects](https://github.com/wwmm/easyeffects) | GPL-3.0-or-later: `LICENSE` at v8.2.9 is the GPL version 3, and `src/local_server.cpp`'s header at v8.2.9 says "either version 3 of the License, or (at your option) any later version" (both read on 2026-10-03) | Facts, each cited where it is used, mostly in `src/easyeffects-lib.sh` and `docs/DEEPFILTERNET.md`: the socket's path and line format, what each line is answered with and from which version, the 8.x layout of presets and settings, the preset's keys and plugin index, the LADSPA search list, the control ports' ranges. Two quoted phrases: "does not seem to destroy its threads properly", from `src/deepfilternet.cpp:97` at v8.2.9 (in `src/jayos-denoise` and `docs/DEEPFILTERNET.md`), and "active only when our window is opened", from `src/contents/kcfg/easyeffects_db.kcfg:51` at v8.2.9 (in `src/easyeffects-lib.sh`). `tests/shell/test-engine.sh`'s fake daemon is modelled on `src/local_server.cpp`, not copied from it. |
-| [ismailivanov/DeepFilterNetPlus](https://github.com/ismailivanov/DeepFilterNetPlus) | MIT OR Apache-2.0, above | Beyond what is built: its `docs/LADSPA_OVERLOAD_REPORT.md`, for why upstream's plugin can stall, and its plugin's log line "Output underrun, increasing processing latency" (`ladspa/src/lib.rs:543` at the pin) |
+| [ismailivanov/DeepFilterNetPlus](https://github.com/ismailivanov/DeepFilterNetPlus) | MIT OR Apache-2.0, above | Beyond what is built: its `docs/LADSPA_OVERLOAD_REPORT.md`, for why upstream's plugin can stall, its plugin's log line "Output underrun, increasing processing latency" (`ladspa/src/lib.rs:543` at the pin), and `ladspa/filter-chain-configs/deepfilter-mono-source.conf`, the filter-chain source the host's configuration follows in shape (`src/jayos-audio`) |
+| [ilyamiro/serpantinum-audio](https://github.com/ilyamiro/serpantinum-audio) and the Serpantinum shell | serpantinum-audio: AGPL-3.0 (its `LICENSE`, read on 2026-11-11); nothing of it is copied, and application names are facts | Facts, in `docs/AUDIO.md`: that it is an output engine on PipeWire, its list of voice-chat applications and call roles that skip it (`src/exclude.h`), that each stream is decided once (its README), and one quoted phrase, "microphone effects, which Serpantinum does not do", from the shell's `docs/components/serpantinum-audio.md`; read on 2026-11-11 |
+| [PipeWire](https://gitlab.freedesktop.org/pipewire/pipewire) and [WirePlumber](https://gitlab.freedesktop.org/pipewire/wireplumber) | MIT, PipeWire with parts taken from PulseAudio under the LGPL (each project's `LICENSE`) | Facts, each cited where it is used in `src/jayos-audio`, `share/` and `docs/AUDIO.md`: module-rt's portal-then-rtkit order, pipewire-pulse's record buffer attributes, `pulse.min.frag`, drop-in order, and WirePlumber 0.5.19's linking rules |
 
 ## Jadocee/jayos -- where this repository's code came from
 
-`src/jayos-denoise`, `src/easyeffects-lib.sh`, the cases and fakes in
+`src/jayos-denoise` as 1.x had it (2.0.0 replaced it with a forwarder),
+`src/easyeffects-lib.sh`, 1.x's cases and fakes in
 `tests/shell/test-engine.sh`, and everything in `docs/DEEPFILTERNET.md` after
 its preface came from <https://github.com/Jadocee/jayos> at commit `bf53d6a`,
 where they were `config/common/scripts/hypr/denoise.sh`,
@@ -157,3 +177,22 @@ was and what changed. JayOS is Jadocee's, as this repository is, so this is a
 move, not a borrowing: the copies here are under this repository's MIT
 licence, `LICENSE`. jayos itself has no licence file at its root at that
 commit, so nothing here says what terms jayos's own copies are under.
+
+In 2.0.0 four more came from jayos, at commit `d9428e6`, its `dev` that day:
+`share/pipewire/pipewire-pulse.conf.d/60-jayos-capture-latency.conf` and
+`share/wireplumber/wireplumber.conf.d/50-alsa-soft-mixer.conf` from its
+`config/pipewire/` and `config/wireplumber/`, the floor section of
+`src/jayos-audio` from its `config/common/scripts/hypr/pulse-latency.sh`, and
+`tests/shell/test-floor.sh` from its `tools/test-pulse-latency.sh`; each
+header says so.
+
+And from jayos commit `45256e08`, its working branch on 2026-11-11: the two
+programs under `rust/crates/jayos-audio-tools/src/bin/`, byte for byte from its
+`rust/crates/jayos-desktop/src/bin/`; `rust/crates/jayos-core/`'s files but
+`src/lib.rs`, byte for byte from its `rust/crates/jayos-core/`
+(`PROVENANCE.md` there has the sums); `rust/rustfmt.toml`, from its
+`rust/rustfmt.toml`; and `tests/shell/test-audio-state.sh`, from its
+`tools/test-audio-state.sh`, with `path_without` from its
+`tools/lib/absent.sh`, the changes listed in the suite's header. The same
+move under the same licence: the workspace's Cargo.toml says `license =
+"MIT"`, as jayos's said for them there.

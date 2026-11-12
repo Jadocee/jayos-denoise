@@ -20,7 +20,9 @@
 #
 # depends= is held both ways to what the package runs: the plugin's half to
 # the NEEDED check in steps.sh, the engine's to the commands a small shell
-# lexer reads out of src/jayos-denoise and src/easyeffects-lib.sh.
+# lexer reads out of src/jayos-audio, src/jayos-denoise, src/easyeffects-lib.sh
+# and src/easyeffects.sh, the EasyEffects helper that moved here from jayos,
+# and the programs' to what jayos-audio-state starts through its run().
 #
 # What this does NOT prove, and is read rather than run: that makepkg accepts
 # the file (no makepkg or namcap here), that the source=() line clones, and
@@ -79,10 +81,10 @@ else
     bad "its functions are '$fns'; this suite runs prepare, build, check and package and knows of no others"
 fi
 
-if [[ "$(recipe 'printf %s "$pkgname"')" == "jayos-denoise" ]]; then
-    pass "pkgname is jayos-denoise"
+if [[ "$(recipe 'printf %s "$pkgname"')" == "jayos-audio" ]]; then
+    pass "pkgname is jayos-audio"
 else
-    bad "pkgname is '$(recipe 'printf %s "$pkgname"')', not jayos-denoise"
+    bad "pkgname is '$(recipe 'printf %s "$pkgname"')', not jayos-audio"
 fi
 
 # THE VERSION IS VERSION's. Written out rather than computed -- the recipe
@@ -452,10 +454,21 @@ commands_of() {
     awk -v keywords="$(compgen -k | tr '\n' ' ')" -v builtins="$(compgen -b | tr '\n' ' ')" \
         "$COMMANDS_AWK" "$@" | sort -u
 }
-FOUND=$(cd "$ROOT" && commands_of src/jayos-denoise src/easyeffects-lib.sh)
+FOUND=$(cd "$ROOT" && commands_of src/jayos-audio src/jayos-denoise src/easyeffects-lib.sh src/easyeffects.sh)
 RUNS=$(sed -n 's/^run //p' <<<"$FOUND")
 PROBES=$(sed -n 's/^probe //p' <<<"$FOUND")
-DYNAMIC=$(sed -n 's/^dynamic //p' <<<"$FOUND")
+# jayos-denoise runs the engine beside it as "$ENGINE": the package's own file,
+# which needs no package of its own. So does easyeffects.sh, as
+# "$engine_path", and this package's two other commands, jayos-audio-state as
+# "$helper" and jayos-equalizer-preset as "$builder", found beside it or in
+# /usr/bin where the package installs them. Any other expansion as a command
+# word is one no row can be named for.
+DYNAMIC=$(sed -n 's/^dynamic //p' <<<"$FOUND" | while IFS=: read -r f n; do
+    [[ "$f" == src/jayos-denoise ]] && sed -n "${n}p" "$ROOT/$f" | grep -qF 'exec "$ENGINE"' && continue
+    [[ "$f" == src/easyeffects.sh ]] \
+        && sed -n "${n}p" "$ROOT/$f" | grep -qE '(^|[^[:alnum:]_])"\$(engine_path|helper|builder)" ' && continue
+    printf '%s:%s\n' "$f" "$n"
+done)
 
 # command, the package that installs it, and how the recipe declares it:
 # depends; optdepends (and probed with `command -v` before it is run, so the
@@ -466,24 +479,51 @@ DYNAMIC=$(sed -n 's/^dynamic //p' <<<"$FOUND")
 read -r -d '' TOOLS <<'TABLE'
 awk          gawk         depends
 basename     coreutils    depends
+bash         bash         depends
 cat          coreutils    depends
+chmod        coreutils    depends
+cut          coreutils    depends
+date         coreutils    depends
 dirname      coreutils    depends
 easyeffects  easyeffects  optdepends
+gdbus        glib2        probed
 grep         grep         depends
+head         coreutils    depends
+hyprctl      hyprland     probed
 id           coreutils    depends
 jq           jq           depends
 mkdir        coreutils    depends
 mktemp       coreutils    depends
 mv           coreutils    depends
+pactl        libpulse     optdepends
+paste        coreutils    depends
 pgrep        procps-ng    depends
+pipewire     pipewire     depends
+pkill        procps-ng    depends
+ps           procps-ng    depends
+pw-cli       pipewire     depends
+pw-dump      pipewire     depends
+pw-metadata  pipewire     depends
 realpath     coreutils    depends
 rm           coreutils    depends
 sed          sed          depends
 setsid       util-linux   depends
+sha256sum    coreutils    depends
 sleep        coreutils    depends
 socat        socat        depends
-systemctl    systemd      probed
+systemctl    systemd      depends
+tail         coreutils    depends
 timeout      coreutils    depends
+tr           coreutils    depends
+TABLE
+
+# Packages the engine needs running rather than runs: no command of theirs is
+# in the code, so the lexer cannot find them, and each is named here with why.
+# A row the recipe does not depend on fails, and so does a depends=() entry
+# that is neither a command's package nor one of these.
+read -r -d '' SERVICES <<'TABLE'
+wireplumber  links the host's capture side to the microphone, and keeps the default input
+rtkit        grants the host and EasyEffects real time; the drop-ins send module-rt to it, not the portal
 TABLE
 
 if [[ -n "$RUNS" ]] && grep -qx jq <<<"$RUNS"; then
@@ -536,15 +576,72 @@ for tool in $(printf '%s\n' "${!ROW_PKG[@]}" | sort); do
     esac
 done
 
+# THE PROGRAMS' HALF: what jayos-audio-state runs. Every program it starts
+# goes through its one `run("<name>", ...)` (its spawning wrapper), so the
+# names are read off those calls on code lines, comments stripped -- a
+# comment naming pactl is not a call of it -- and above the file's one
+# #[cfg(test)], whose tests run sh and sleep. jayos-equalizer-preset starts
+# nothing. Each name has a row: the package, and whether depends= or
+# optdepends= declares it. pactl is optdepends, as the floor already had it:
+# the program never probes for it, and a pactl that is not there is a sound
+# server that answered nothing -- an empty popup, not a failure -- which is
+# a choice the recipe states, not one this suite makes.
+read -r -d '' PROGRAM_TOOLS <<'TABLE'
+pactl    libpulse     optdepends
+pw-dump  pipewire     depends
+wpctl    wireplumber  depends
+TABLE
+AUDIO_STATE="$ROOT/rust/crates/jayos-audio-tools/src/bin/jayos-audio-state.rs"
+PROGRAM_RUNS=$(sed -E '/^#\[cfg\(test\)\]$/,$d; s://.*$::' "$AUDIO_STATE" 2>/dev/null \
+    | grep -oE '(^|[^A-Za-z0-9_])run\("[^"]+"' | sed -E 's/.*run\("//; s/"$//' | sort -u)
+if [[ -n "$PROGRAM_RUNS" ]] && grep -qx pactl <<<"$PROGRAM_RUNS"; then
+    pass "jayos-audio-state runs $(grep -c . <<<"$PROGRAM_RUNS") programs through run(): $(paste -sd' ' <<<"$PROGRAM_RUNS")"
+else
+    bad "no run(\"...\") call, or none of pactl, read out of $AUDIO_STATE; nothing below examined it"
+fi
+declare -A PROG_PKG=() PROG_HOW=()
+while read -r tool pkg how; do
+    [[ -n "$tool" ]] || continue
+    PROG_PKG[$tool]=$pkg
+    PROG_HOW[$tool]=$how
+done <<<"$PROGRAM_TOOLS"
+for tool in $PROGRAM_RUNS; do
+    [[ -v PROG_PKG[$tool] ]] || bad "jayos-audio-state runs $tool, which no row of the programs' table assigns to a package"
+done
+for tool in $(printf '%s\n' "${!PROG_PKG[@]}" | sort); do
+    pkg=${PROG_PKG[$tool]}
+    if ! grep -qx -- "$tool" <<<"$PROGRAM_RUNS"; then
+        bad "the programs' table names $tool, which jayos-audio-state no longer runs"
+        continue
+    fi
+    case ${PROG_HOW[$tool]} in
+        depends) NEED[$pkg]+=" $tool(jayos-audio-state)" ;;
+        optdepends)
+            if recipe "for v in \"\${optdepends[@]}\"; do [[ \$v == '$pkg:'* ]] && exit 0; done; exit 1"; then
+                pass "optdepends=() has $pkg, for jayos-audio-state's $tool"
+            else
+                bad "jayos-audio-state runs $tool, but neither depends=() nor optdepends=() names $pkg"
+            fi
+            ;;
+        *) bad "the programs' row for $tool says '${PROG_HOW[$tool]}', which is not depends or optdepends" ;;
+    esac
+done
+
 # The interpreter: the engine is started by its #! line, so that line's
 # programs are run as surely as anything in its body.
-shebang=$(head -n 1 "$ROOT/src/jayos-denoise")
-if [[ "$shebang" == '#!/usr/bin/env bash' ]]; then
-    NEED[bash]+=" bash(#!)"
-    NEED[coreutils]+=" env(#!)"
-else
-    bad "src/jayos-denoise starts '$shebang', not '#!/usr/bin/env bash'; this suite knows which packages only that line needs"
-fi
+for f in src/jayos-audio src/jayos-denoise; do
+    shebang=$(head -n 1 "$ROOT/$f")
+    if [[ "$shebang" == '#!/usr/bin/env bash' ]]; then
+        NEED[bash]+=" bash(#!)"
+        NEED[coreutils]+=" env(#!)"
+    else
+        bad "$f starts '$shebang', not '#!/usr/bin/env bash'; this suite knows which packages only that line needs"
+    fi
+done
+while read -r pkg why; do
+    [[ -n "$pkg" ]] || continue
+    NEED[$pkg]+=" ($why)"
+done <<<"$SERVICES"
 
 for pkg in $(printf '%s\n' "${!NEED[@]}" | sort); do
     if has depends "$pkg"; then

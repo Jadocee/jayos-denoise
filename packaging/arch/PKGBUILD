@@ -36,10 +36,10 @@
 # every build, and a recipe that edits itself in a checkout is a recipe whose
 # diff nobody can read.
 
-pkgname=jayos-denoise
-pkgver=1.0.2
+pkgname=jayos-audio
+pkgver=2.0.0
 pkgrel=1
-pkgdesc="Microphone noise suppression for EasyEffects: DeepFilterNet 3 with the full model, and the command that switches it"
+pkgdesc="JayOS's audio engine: microphone noise suppression with DeepFilterNet 3 in a PipeWire filter-chain, real time through rtkit, and the PipeWire settings JayOS needs"
 arch=('x86_64')
 url="https://github.com/Jadocee/jayos-denoise"
 # This repository's code is MIT; the plugin is the fork's, dual-licensed at
@@ -56,17 +56,23 @@ license=('MIT' 'MIT OR Apache-2.0')
 # system might lack. tests/shell/test-packaging.sh reads the commands out of
 # the code and holds this list to them both ways -- a command no package
 # here installs fails it, and so does a package here that nothing runs.
-depends=('glibc' 'gcc-libs' 'bash' 'jq' 'socat' 'procps-ng' 'util-linux' 'gawk' 'coreutils' 'sed' 'grep')
+depends=('glibc' 'gcc-libs' 'bash' 'jq' 'socat' 'procps-ng' 'util-linux' 'gawk' 'coreutils' 'sed' 'grep'
+         'pipewire' 'wireplumber' 'rtkit' 'systemd')
 # cargo is provided by the rustup package as well as by rust, so either
 # toolchain satisfies makepkg; git is for the source line and the checkout.
 makedepends=('cargo' 'git')
-optdepends=('easyeffects: the host that loads the plugin, and what jayos-denoise switches')
+optdepends=('easyeffects: the output effects JayOS switches; no longer in the microphone'"'"'s path'
+            'pipewire-pulse: the recording floor is for PulseAudio clients'
+            'libpulse: pactl, so the floor can tell whether anything is streaming')
 # Every packaging of the plugin provides and conflicts on this name -- the AUR's
 # three, and the deepfilternet-ladspa recipe JayOS carried before this
 # package -- so this one cannot be installed beside any of them, which is
 # right, since they would all put the same file in /usr/lib/ladspa.
-provides=('libdeep_filter_ladspa')
-conflicts=('libdeep_filter_ladspa')
+# jayos-denoise was this package's name until 2.0.0 (src/jayos-audio says
+# why it changed); replaces moves a machine that has it on to this.
+provides=('libdeep_filter_ladspa' 'jayos-denoise')
+conflicts=('libdeep_filter_ladspa' 'jayos-denoise')
+replaces=('jayos-denoise')
 # !lto: makepkg's lto option only adds -flto=auto to the C flags, which here
 # reach nothing but the jemalloc that jemalloc-sys compiles, while the Rust
 # side already has the profile's thin LTO. !debug: it would put

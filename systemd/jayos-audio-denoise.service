@@ -1,0 +1,22 @@
+# The microphone, noise suppressed: DeepFilterNet in a PipeWire filter-chain,
+# hosted by a PipeWire client of its own. `jayos-audio denoise on` enables and
+# starts it; `off` stops and disables it. src/jayos-audio says why it is not
+# EasyEffects, and how its source becomes the default input.
+[Unit]
+Description=jayos-audio: the microphone, noise suppressed
+# WirePlumber links the capture side, so the host waits for it, as omarchy's
+# speaker tuning does (default/systemd/user/omarchy-speaker-tuning.service).
+After=pipewire.service wireplumber.service
+Requires=pipewire.service
+Wants=wireplumber.service
+# The filter-chain loses its connection when PipeWire goes, so it goes with it.
+PartOf=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/jayos-audio/jayos-audio denoise host
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
