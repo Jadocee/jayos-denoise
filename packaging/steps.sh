@@ -360,6 +360,7 @@ check_engine() {
     bash -n "$ROOT/src/jayos-audio" || die "src/jayos-audio does not parse"
     bash -n "$ROOT/src/jayos-denoise" || die "src/jayos-denoise does not parse"
     bash -n "$ROOT/src/easyeffects-lib.sh" || die "src/easyeffects-lib.sh does not parse"
+    bash -n "$ROOT/src/easyeffects.sh" || die "src/easyeffects.sh does not parse"
     names=$("$ROOT/src/jayos-audio" denoise strengths) || die "jayos-audio denoise strengths failed"
     [[ -n "$names" ]] || die "jayos-audio names no strengths"
     shim=$("$ROOT/src/jayos-denoise" strengths) || die "jayos-denoise strengths failed"
@@ -397,13 +398,15 @@ step_package() {
     install -Dm755 "$tree/target/release/$SO_NAME" -t "$pkgdir/usr/lib/ladspa/" \
         || die "could not install $SO_NAME; build first"
 
-    # The engine, the 1.x command beside it, the library it uses to bypass an
-    # EasyEffects preset 1.x left, and VERSION, which `jayos-audio version`
-    # reads beside itself. /usr/bin names the two by relative links: each
-    # finds the others through realpath, whichever name it was started by.
+    # The engine, the 1.x command beside it, EasyEffects' verbs that
+    # `jayos-audio easyeffects` hands on (moved here from JayOS), the library
+    # both use, and VERSION, which `jayos-audio version` reads beside itself.
+    # /usr/bin names the two commands by relative links: each finds the
+    # others through realpath, whichever name it was started by.
     install -Dm755 "$ROOT/src/jayos-audio" "$lib/jayos-audio" || die "could not install the engine"
     install -Dm755 "$ROOT/src/jayos-denoise" "$lib/jayos-denoise" || die "could not install jayos-denoise"
     install -Dm644 "$ROOT/src/easyeffects-lib.sh" "$lib/easyeffects-lib.sh" || die "could not install the library"
+    install -Dm644 "$ROOT/src/easyeffects.sh" "$lib/easyeffects.sh" || die "could not install easyeffects.sh"
     install -Dm644 "$ROOT/VERSION" "$lib/VERSION" || die "could not install VERSION"
     install -d "$pkgdir/usr/bin" || die "could not make $pkgdir/usr/bin"
     ln -sfn ../lib/jayos-audio/jayos-audio "$pkgdir/usr/bin/jayos-audio" || die "could not link the engine"

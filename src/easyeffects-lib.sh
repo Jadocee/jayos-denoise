@@ -2,29 +2,24 @@
 #
 # EasyEffects, as this configuration finds it on disk and on its socket.
 #
-# Sourced by jayos-denoise, from its own directory, and sets no shell
-# options: the caller's `set -u` and pipefail stay the caller's.
+# Sourced by this package's easyeffects.sh and its engine, jayos-audio, from
+# their own directory, and sets no shell options: the caller's `set -u` and
+# pipefail stay the caller's.
 #
-# A COPY. This is JayOS's config/common/scripts/easyeffects-lib.sh at jayos
-# commit bf53d6a, where hypr/easyeffects.sh, music/equalizer.sh,
-# hypr/app-install.sh and the noise-suppression script that became
-# jayos-denoise (hypr/denoise.sh) all sourced it. JayOS keeps its own for the
-# first three, and for the hypr/denoise.sh that is now its settings wrapper
-# (which asks it ee_installed, ee_running and the like), so there are two
-# copies, and a fix to one is a fix to one: diff against that commit to
-# carry a change across.
-#
-# Not a dependency on JayOS, which would make this package need the desktop it
-# was moved out of -- the coupling the move exists to remove. Whole, not
-# trimmed, so the reasons travel with the code; the comments below are JayOS's,
-# and the paths in them are JayOS's at that commit (hypr/denoise.sh is what
-# became jayos-denoise). Two edits:
-#
-#   - this paragraph and the one above it replace the original's sentence
-#     naming three of its sourcers (it missed hypr/app-install.sh);
-#   - ee_apply_noise_setting is gone from the end. It spawned JayOS's
-#     hypr/denoise.sh by a path relative to the library, which does not exist
-#     here; the shell that starts EasyEffects is what has to call `apply`.
+# MOVED FROM JAYOS, whole, at jayos commit ac951df1: it was the
+# desktop's config/common/scripts/easyeffects-lib.sh, which its
+# hypr/easyeffects.sh, hypr/denoise.sh, music/equalizer.sh and app-install.sh
+# sourced. Since then the desktop keeps no copy: its scripts reach EasyEffects
+# through `jayos-audio easyeffects`, and until then this package carried a
+# copy of its own, made at jayos commit bf53d6a, so there were two to keep
+# alike. The comments below are the desktop's and name its paths: where they
+# say hypr/easyeffects.sh they mean the file beside this one, which was that
+# script; hypr/denoise.sh is the desktop's settings wrapper, which hands every
+# switch to this package's engine; and where they name jayos-denoise they
+# describe 1.x's engine, an EasyEffects input preset, which 2.0.0's replaced
+# with a PipeWire filter-chain. Two edits, both said where they are: the
+# engine is found beside this file, and the start hook is a command the
+# caller names rather than a desktop's script.
 #
 # WHY THIS EXISTS
 #
@@ -67,8 +62,8 @@
 # that was meant and nothing else, and needs no display, where the command
 # line is a whole Qt application that did.
 #
-# socat, because it is already a core dependency
-# (pkgbuilds/quickshell-shell-core) and upstream documents this socket for
+# socat, because it is already a core dependency (jayos-core, in
+# pkgbuilds/jayos/PKGBUILD) and upstream documents this socket for
 # exactly this use, with socat (src/contents/docs/user_interface/
 # local_server.md at v8.2.9). Two things about it make it a good client:
 #
@@ -95,11 +90,13 @@
 # does not know, or whose pattern it does not match, is dropped without a
 # word. So before 8.1.3 a question about the bypass reads here as no answer
 # and the rc answers instead, and the popup's bypass switch does nothing;
-# before 8.0.7 a load reaches the daemon and changes nothing, which denoise.sh
-# catches by asking what is held and easyeffects.sh's `load` cannot.
+# before 8.0.7 a load reaches the daemon and changes nothing, which
+# jayos-denoise catches by asking what is held and easyeffects.sh's `load`
+# cannot.
 #
 # Readiness here is a socket something listens on. A load is believed only by
-# a caller that asks afterwards what is held, which is denoise.sh:
+# a caller that asks afterwards what is held, which is jayos-denoise, the
+# engine hypr/denoise.sh calls:
 # easyeffects.sh's `load` leaves that to the popup's next status poll, and
 # music/equalizer.sh asks nobody (docs/AUDIO.md).
 
@@ -134,8 +131,9 @@ ee_have_client()  { command -v socat >/dev/null 2>&1; }
 # three seconds after a crash (easyeffects.service RestartSec=3). So for the
 # seconds a restart takes there is a process and a socket file and nothing
 # listening, and `-S` called that ready: every wait below returned at once,
-# denoise.sh spent its three tries on a dead socket and failed `set on`, and
-# the popup's preset button sent its load into it.
+# the noise switch -- hypr/denoise.sh then, jayos-denoise's engine now --
+# spent its three tries on a dead socket and failed `set on`, and the
+# popup's preset button sent its load into it.
 #
 # The test is the one that matters -- would a connection be accepted -- made
 # with the client every request uses. The lock is no help (the audit's first
@@ -237,8 +235,8 @@ ee_preset_name_ok() { # ee_preset_name_ok <name>
 }
 
 # Load one preset into one pipeline: 0 when the line reached a daemon that
-# was listening, which is all a write can know -- denoise.sh asks afterwards
-# what is held. The name is refused here as well as by any caller that asked
+# was listening, which is all a write can know -- jayos-denoise asks
+# afterwards what is held. The name is refused here as well as by any caller that asked
 # first: this is the last place it can be.
 ee_load_preset() { # ee_load_preset <input|output> <name>
     [[ "$1" == input || "$1" == output ]] || return 1
@@ -335,11 +333,27 @@ ee_value() { # ee_value <input|output|bypassed>
     return 1
 }
 
+# Where the noise-suppression engine is: beside this file, where the package
+# installs both (/usr/lib/jayos-audio) and where they sit in a checkout
+# (src/). The desktop's copy looked in its QS_PKG_BIN, since the package was
+# somewhere else then; the first edit. Not jayos-denoise, which this package
+# installs too, for 1.x's verbs. Printed; 1 when there is none.
+ee_denoise_engine() {
+    local e
+    e="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/jayos-audio"
+    [[ -x "$e" ]] || return 1
+    printf '%s' "$e"
+}
+
 # Where the DeepFilterNet plugin is, if anywhere.
 #
 # The same search EasyEffects does (src/ladspa_wrapper.cpp): $LADSPA_PATH when
-# it is set, its built-in list otherwise. Printed, so the doctor can name the
-# file; 1 when there is none.
+# it is set, its built-in list otherwise -- the list jayos-audio searches as
+# well. Printed, so the doctor can name the file; 1 when there is none. The
+# file is the jayos-audio package's; a copy left by jayos-denoise 1.x or the
+# deepfilternet-ladspa recipe this tree carried before it answers here too,
+# which is why the popup asks for the engine as well (easyeffects.sh status,
+# `plugin`).
 ee_plugin_path() {
     local dirs="${LADSPA_PATH:-}" d
     [[ -n "$dirs" ]] || dirs="/usr/local/lib/ladspa:/usr/lib/ladspa:/usr/lib64/ladspa"
@@ -386,4 +400,41 @@ ee_ensure_running() {
     # start would lose the lock and exit, and the wait below covers it.
     ee_running || setsid -f easyeffects --hide-window --service-mode >/dev/null 2>&1
     ee_wait_running 15
+}
+
+# The caller's start hook, for an instance the caller is about to start: the
+# command in JAYOS_AUDIO_EE_ON_START, run with bash, detached. Nothing when it
+# is unset. The second edit: the desktop's copy ran its own hypr/denoise.sh
+# apply here, by a path beside the library, which does not exist beside this
+# one -- so the desktop's hypr/easyeffects.sh, which hands every verb to this
+# package, names that command in the variable instead.
+#
+# What it was for, in the desktop's words. Since jayos-audio 2.0.0 the filter
+# is no EasyEffects preset, and an EasyEffects start changes nothing it does.
+# What is left is the preset jayos-denoise 1.x wrote: EasyEffects restores its
+# input pipeline from its own database when it starts, so a 1.x `set off`
+# that found nothing running left that database saying "ours, not bypassed",
+# and the next start brought that filter back. `denoise.sh apply` bypasses it
+# -- through jayos-audio's apply, which retires the preset, or by itself where
+# jayos-audio is not installed yet -- at login, and for an instance started
+# mid-session -- by the popup's Start, Next preset or Open, or by the
+# equaliser -- through here.
+#
+# Detached, and spawned BEFORE the caller waits for its instance, not after.
+# A start takes seconds -- four through the unit, fifteen more by hand -- and
+# the popup does not keep its callers alive that long: its next click stops
+# the running action (SIGTERM), and closing it destroys the Process, which
+# is SIGKILL (Quickshell's ~Process calls kill(), src/io/process.cpp). An
+# apply queued behind the wait never ran: Start and then Open, or Start and
+# then close the popup, and the filter ran under an "off" (RUN against a
+# Qt 6.4 model of the daemon). apply needs nothing from its caller to go on:
+# jayos-audio's waits for PipeWire by itself, and the 1.x preset's bypass
+# waits up to twenty seconds for an instance that is starting. A word list,
+# not a line for eval: the command is split on spaces and run as it stands.
+ee_on_start() {
+    [[ -n "${JAYOS_AUDIO_EE_ON_START:-}" ]] || return 0
+    local -a words
+    read -ra words <<<"$JAYOS_AUDIO_EE_ON_START"
+    (( ${#words[@]} )) || return 0
+    setsid -f bash "${words[@]}" >/dev/null 2>&1
 }

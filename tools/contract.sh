@@ -22,6 +22,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="$ROOT/src/jayos-audio"
 SHIM="$ROOT/src/jayos-denoise"
 LIB="$ROOT/src/easyeffects-lib.sh"
+EE="$ROOT/src/easyeffects.sh"
 STEPS="$ROOT/packaging/steps.sh"
 OUT="$ROOT/contract"
 
@@ -86,6 +87,12 @@ generate() { # generate <dir>
     { header "jayos-audio's forms, one per line." "src/jayos-audio's usage block"
       forms "$ENGINE" jayos-audio
     } > "$dir/engine-commands.txt"
+    # The verbs `jayos-audio easyeffects` hands on, as the desktop may call
+    # them: its hypr/easyeffects.sh passes every word it is given, so these
+    # are what its popup, installer and doctor can rely on.
+    { header "jayos-audio easyeffects's verbs, one per line." "src/easyeffects.sh's usage block"
+      forms "$EE" easyeffects.sh | sed 's/^easyeffects\.sh /jayos-audio easyeffects /'
+    } > "$dir/easyeffects-commands.txt"
 
     names=$("$ENGINE" denoise strengths) || die "jayos-audio denoise strengths failed"
     { header "The strength names, in order. Any other name is refused for on." "jayos-audio denoise strengths"

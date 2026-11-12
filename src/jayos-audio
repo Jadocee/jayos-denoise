@@ -23,6 +23,10 @@
 #   jayos-audio realtime                     how PipeWire's processes are
 #                                            scheduled, and why where they are not
 #                                            real time
+#   jayos-audio easyeffects <verb> [args]    EasyEffects, as the desktop's volume
+#                                            popup, installer and doctor drive it:
+#                                            easyeffects.sh beside this, whose
+#                                            header lists the verbs
 #   jayos-audio version
 #
 # A strength is gentle, balanced or maximum; left out, it is the one last set,
@@ -336,8 +340,8 @@ retire_easyeffects_preset() {
     # at start, not from this file, so an instance started after an off that
     # found nothing running holds the preset un-bypassed whatever the file
     # says -- 1.x's apply reloaded it for exactly that, and JayOS's popup
-    # still spawns this at every EasyEffects start it makes (its
-    # easyeffects-lib.sh, ee_apply_noise_setting).
+    # still spawns this at every EasyEffects start it makes (the start hook,
+    # easyeffects-lib.sh's ee_on_start, which JayOS points at its denoise.sh).
     if ee_running 2>/dev/null && [[ "$(ee_current_preset input 2>/dev/null)" == denoise ]]; then
         ee_load_preset input denoise >/dev/null 2>&1 || true
     fi
@@ -623,6 +627,13 @@ case "${1:-}" in
                   *)      echo "usage: jayos-audio floor status|apply" >&2; exit 2 ;;
               esac ;;
     realtime) realtime ;;
+    # EasyEffects' verbs are their own script, moved here from JayOS whole
+    # (its header says when): exec'd, so its exit status and its two streams
+    # are the caller's, as they were when the desktop ran it itself.
+    easyeffects)
+              shift
+              [[ -f "$HERE/easyeffects.sh" ]] || die "easyeffects.sh is not beside $SELF"
+              exec bash "$HERE/easyeffects.sh" "$@" ;;
     version)  version_text ;;
-    *)        echo "usage: jayos-audio denoise ...|floor status|apply|realtime|version" >&2; exit 1 ;;
+    *)        echo "usage: jayos-audio denoise ...|floor status|apply|realtime|easyeffects <verb>|version" >&2; exit 1 ;;
 esac

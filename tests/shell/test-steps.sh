@@ -96,7 +96,7 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 REPO="$WORK/repo"
 mkdir -p "$REPO/packaging/arch" "$REPO/src" "$REPO/contract" "$REPO/docs"
 cp "$ROOT/packaging/steps.sh" "$REPO/packaging/steps.sh"
-cp "$ROOT/src/jayos-audio" "$ROOT/src/jayos-denoise" "$ROOT/src/easyeffects-lib.sh" "$REPO/src/"
+cp "$ROOT/src/jayos-audio" "$ROOT/src/jayos-denoise" "$ROOT/src/easyeffects-lib.sh" "$ROOT/src/easyeffects.sh" "$REPO/src/"
 cp "$ROOT/VERSION" "$REPO/VERSION"
 cp -r "$ROOT/systemd" "$ROOT/share" "$REPO/"
 cp "$ROOT"/contract/* "$REPO/contract/"
@@ -568,6 +568,7 @@ baseline() {
     cp "$ROOT/src/jayos-audio" "$REPO/src/jayos-audio"
     cp "$ROOT/src/jayos-denoise" "$REPO/src/jayos-denoise"
     cp "$ROOT/src/easyeffects-lib.sh" "$REPO/src/easyeffects-lib.sh"
+    cp "$ROOT/src/easyeffects.sh" "$REPO/src/easyeffects.sh"
 }
 check_tree() { baseline; "$@"; steps check "$PLUG"; }
 PLUG_REAL=$(realpath "$PLUG")
@@ -676,6 +677,8 @@ check_tree eval 'printf "\nif then\n" >> "$REPO/src/jayos-denoise"'
 expect_fail "a 1.x command that does not parse fails" "src/jayos-denoise does not parse"
 check_tree eval 'printf "\nif then\n" >> "$REPO/src/easyeffects-lib.sh"'
 expect_fail "a library that does not parse fails" "src/easyeffects-lib.sh does not parse"
+check_tree eval 'printf "\nif then\n" >> "$REPO/src/easyeffects.sh"'
+expect_fail "an easyeffects.sh that does not parse fails" "src/easyeffects.sh does not parse"
 check_tree eval 'printf "#!/usr/bin/env bash\nexit 0\n" > "$REPO/src/jayos-audio"'
 expect_fail "an engine that names no strengths fails" "names no strengths"
 check_tree eval 'printf "#!/usr/bin/env bash\necho gentle\n" > "$REPO/src/jayos-denoise"'
@@ -744,6 +747,7 @@ want=$( {
         "f 755 usr/lib/jayos-audio/jayos-audio" \
         "f 755 usr/lib/jayos-audio/jayos-denoise" \
         "f 644 usr/lib/jayos-audio/easyeffects-lib.sh" \
+        "f 644 usr/lib/jayos-audio/easyeffects.sh" \
         "f 644 usr/lib/jayos-audio/VERSION" \
         "l 777 usr/bin/jayos-audio" \
         "l 777 usr/bin/jayos-denoise" \

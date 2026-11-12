@@ -11,4 +11,5 @@ jayos-audio denoise strengths
 jayos-audio denoise host
 jayos-audio floor status|apply
 jayos-audio realtime
+jayos-audio easyeffects <verb> [args]
 jayos-audio version

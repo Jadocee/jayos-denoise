@@ -2,8 +2,9 @@
 
 jayos draws this package's switch in its volume popup and its settings,
 diagnoses noise suppression and the recording floor in its doctor, runs
-`floor apply` from its install, and builds this package with a recipe of its
-own -- all from another repository. These files are what the two sides agree
+`floor apply` and `easyeffects defaults` from its install, reads EasyEffects'
+state for its popup through `jayos-audio easyeffects`, and builds this
+package with a recipe of its own -- all from another repository. These files are what the two sides agree
 on, in a form each side can test against without the other's code. jayos
 vendors a copy of this directory, records the commit it came from and each
 file's sha256, and its suites hold its wrappers, its popup, its doctor and its
@@ -13,6 +14,7 @@ recipe to the copy.
 |---|---|---|
 | `VERSION` | The schema of the files below: 2 since jayos-audio 2.0.0, where 1 had EasyEffects presets. A reader refuses a newer one. | generated |
 | `engine-commands.txt` | `jayos-audio`'s command language, one form per line, as its own usage prints it. jayos's wrappers may run these and no others. | generated |
+| `easyeffects-commands.txt` | The verbs `jayos-audio easyeffects` takes, from `src/easyeffects.sh`'s usage block: EasyEffects as jayos's volume popup, installer, doctor and default-device service drive it, since that script moved here from jayos. jayos's `hypr/easyeffects.sh` hands every word on, so its callers may use these and no others. | generated |
 | `commands.txt` | `jayos-denoise`'s forms, 1.x's verbs, which the engine takes on its behalf. | generated |
 | `status-keys.txt` | The keys `jayos-audio denoise status` prints, in its order: 1.x's, then this engine's. A reader may rely on every key here and on none that is not. | generated |
 | `strengths.txt` | The strength names, in order. jayos writes them into its settings, its popup's cycle and its panel's choices. | generated |

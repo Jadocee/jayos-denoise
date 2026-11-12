@@ -20,7 +20,8 @@
 #
 # depends= is held both ways to what the package runs: the plugin's half to
 # the NEEDED check in steps.sh, the engine's to the commands a small shell
-# lexer reads out of src/jayos-denoise and src/easyeffects-lib.sh.
+# lexer reads out of src/jayos-audio, src/jayos-denoise, src/easyeffects-lib.sh
+# and src/easyeffects.sh, the EasyEffects helper that moved here from jayos.
 #
 # What this does NOT prove, and is read rather than run: that makepkg accepts
 # the file (no makepkg or namcap here), that the source=() line clones, and
@@ -452,14 +453,19 @@ commands_of() {
     awk -v keywords="$(compgen -k | tr '\n' ' ')" -v builtins="$(compgen -b | tr '\n' ' ')" \
         "$COMMANDS_AWK" "$@" | sort -u
 }
-FOUND=$(cd "$ROOT" && commands_of src/jayos-audio src/jayos-denoise src/easyeffects-lib.sh)
+FOUND=$(cd "$ROOT" && commands_of src/jayos-audio src/jayos-denoise src/easyeffects-lib.sh src/easyeffects.sh)
 RUNS=$(sed -n 's/^run //p' <<<"$FOUND")
 PROBES=$(sed -n 's/^probe //p' <<<"$FOUND")
 # jayos-denoise runs the engine beside it as "$ENGINE": the package's own file,
-# which needs no package of its own. Any other expansion as a command word is
-# one no row can be named for.
+# which needs no package of its own. So does easyeffects.sh, as
+# "$engine_path", and this package's two other commands, jayos-audio-state as
+# "$helper" and jayos-equalizer-preset as "$builder", found beside it or in
+# /usr/bin where the package installs them. Any other expansion as a command
+# word is one no row can be named for.
 DYNAMIC=$(sed -n 's/^dynamic //p' <<<"$FOUND" | while IFS=: read -r f n; do
     [[ "$f" == src/jayos-denoise ]] && sed -n "${n}p" "$ROOT/$f" | grep -qF 'exec "$ENGINE"' && continue
+    [[ "$f" == src/easyeffects.sh ]] \
+        && sed -n "${n}p" "$ROOT/$f" | grep -qE '(^|[^[:alnum:]_])"\$(engine_path|helper|builder)" ' && continue
     printf '%s:%s\n' "$f" "$n"
 done)
 
@@ -471,13 +477,18 @@ done)
 # runs, so the table cannot keep a package alive after its reason is gone.
 read -r -d '' TOOLS <<'TABLE'
 awk          gawk         depends
+basename     coreutils    depends
+bash         bash         depends
 cat          coreutils    depends
+chmod        coreutils    depends
 cut          coreutils    depends
 date         coreutils    depends
 dirname      coreutils    depends
 easyeffects  easyeffects  optdepends
+gdbus        glib2        probed
 grep         grep         depends
 head         coreutils    depends
+hyprctl      hyprland     probed
 id           coreutils    depends
 jq           jq           depends
 mkdir        coreutils    depends
@@ -487,6 +498,7 @@ pactl        libpulse     optdepends
 paste        coreutils    depends
 pgrep        procps-ng    depends
 pipewire     pipewire     depends
+pkill        procps-ng    depends
 ps           procps-ng    depends
 pw-cli       pipewire     depends
 pw-dump      pipewire     depends
