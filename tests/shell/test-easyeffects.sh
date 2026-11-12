@@ -116,7 +116,9 @@ check "GAME_TAG is jayos-game" "jayos-game" "$TAG"
 GAMES=$(table GAME_APPS | sed "s/^\\\$GAME_TAG\$/$TAG/")
 check "GAME_APPS: Wine's loaders, Steam, and the tag" "wine steam jayos-game" "$(paste -sd' ' <<<"$GAMES")"
 VOICE=$(table VOICE_APPS)
-check "VOICE_APPS: serpantinum-audio's list and Element, 26 names" 26 "$(grep -c . <<<"$VOICE")"
+check "VOICE_APPS: serpantinum-audio's list, Element, Steam's voice chat and Signal, 30 names" 30 "$(grep -c . <<<"$VOICE")"
+check "Steam's web helper and Signal's three names among them" "steamwebhelper signal-desktop Signal org.signal.Signal" \
+    "$(grep -xE 'steamwebhelper|signal-desktop|Signal|org\.signal\.Signal' <<<"$VOICE" | paste -sd' ' -)"
 SKIP_JOINED=$(printf '%s\n' "$VOICE" "$GAMES" | paste -sd, -)
 
 # ── what an install puts back ───────────────────────────────────────────────
@@ -127,7 +129,7 @@ OUT=$(run defaults --check 2>&1); STATUS=$?
 check "no rc: --check exits 1, naming the three set away from the defaults" \
     "1|[EffectsPipelines] processAllInputs is (unset); this configuration sets false
 [Presets] ignorePresetBlocklist is (unset); this configuration sets true
-[StreamOutputs] blocklist lacks 29 voice-chat application(s) and game(s): $(tr ',' ' ' <<<"$SKIP_JOINED")" \
+[StreamOutputs] blocklist lacks 33 voice-chat application(s) and game(s): $(tr ',' ' ' <<<"$SKIP_JOINED")" \
     "$STATUS|$OUT"
 OUT=$(run defaults 2>&1); STATUS=$?
 check "defaults writes those three and nothing else" "0|[EffectsPipelines]
@@ -163,9 +165,9 @@ fresh
 rc $'[EffectsPipelines]\nprocessAllInputs=false\n\n[Presets]\nignorePresetBlocklist=true\n\n[StreamOutputs]\nblocklist=spotify,my\\\\,app,Discord,wine'
 OUT=$(run defaults 2>&1); STATUS=$?
 BL=$(sed -n 's/^blocklist=//p' "$RC")
-check "a blocklist of the person's is merged into: 27 added, theirs first" "0|spotify,my\\\\,app,Discord,wine," \
+check "a blocklist of the person's is merged into: 31 added, theirs first" "0|spotify,my\\\\,app,Discord,wine," \
     "$STATUS|${BL:0:30}"
-says "saying how many and which" "[StreamOutputs] blocklist: added 27 voice-chat application(s) and game(s), kept the rest: discord" "$OUT"
+says "saying how many and which" "[StreamOutputs] blocklist: added 31 voice-chat application(s) and game(s), kept the rest: discord" "$OUT"
 check "Discord and wine once each" "1 1" "$(tr ',' '\n' <<<"$BL" | grep -cx Discord) $(tr ',' '\n' <<<"$BL" | grep -cx wine)"
 
 # A preset's blocklist turned back on by hand is turned off again.

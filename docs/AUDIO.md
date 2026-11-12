@@ -497,7 +497,7 @@ among its rows, at true, until 2026-11-11.
 |---|---|---|---|
 | `EffectsPipelines` | `processAllInputs` | false | no recording through EasyEffects: with it on, every recording ran through the input preset in EasyEffects' one data thread, beside every output effect, and the microphone lagged and cut out in calls with the Effects switch on (*The microphone leaves EasyEffects*, below). The noise filter is jayos-audio's own filter-chain now |
 | `Presets` | `ignorePresetBlocklist` | true | a preset loaded leaves the blocklist below as it is. Off, EasyEffects puts each preset's own blocklist in its place as it loads it, and an empty one where the preset has none (`Manager::load_blocklist`, `src/presets_manager.cpp` at v8.3.2, read). Every preset the equaliser writes carries `"blocklist": []`, so the first one picked put every application below back on the effects |
-| `StreamOutputs` | `blocklist` | the voice-chat applications and the games, merged in | a call's far end and a game's own mix kept off the output effects: serpantinum-audio's list and Element, each as EasyEffects may match it, and Wine, Steam and the game tag (below) |
+| `StreamOutputs` | `blocklist` | the voice-chat applications and the games, merged in | a call's far end and a game's own mix kept off the output effects: serpantinum-audio's list, Element, Steam's voice chat and Signal, each as EasyEffects may match it, and Wine, Steam and the game tag (below) |
 
 `WANTED`, `VOICE_APPS` and `GAME_APPS` in `hypr/easyeffects.sh` are the
 three, and the suite holds a copy of each. EasyEffects keeps an output stream off its effects when
@@ -512,6 +512,32 @@ VoiceEngine`. EasyEffects has no rule by `media.role`, so serpantinum's skip
 of every call-role stream has no equivalent here. The list is merged into the
 person's, never over it: their entries stay first and as written, an entry of
 ours already there is not added again, and nothing is removed.
+
+**Steam's voice chat and Signal**, by the owner's call on 2026-11-12: "Steam
+party voice chat, steam in-game voice chat, and signal, should not be routed
+through easyeffects for audio output".
+
+- **Steam's chat and party voice**, and the overlay's, run in Steam's web
+  helper, a Chromium, so `steamwebhelper`, its binary, is a voice application
+  of its own; the games' `steam` begins it too.
+- **In-game voice chat** through Steam's voice API is decoded and played by
+  the game itself, in its own stream, so it is kept off as the game is: a
+  Proton game's by `wine`, a native game's by the tag its launcher was
+  started with (below). A native game whose Steam was started some other way
+  carries neither, and its voice chat goes through the effects with its
+  sound.
+- **Signal**, as Arch's `signal-desktop` runs it: electron-builder's own
+  Electron at `/usr/lib/signal-desktop/signal-desktop` (its PKGBUILD's
+  `package()` and the `signal-desktop.sh` it installs, read on 2026-11-12),
+  so `signal-desktop` is the binary; `Signal`, the `application.name`
+  Electron gives its client and its node is named from; and
+  `org.signal.Signal`, the Flatpak's id. Its calls' engine, RingRTC, is built
+  on WebRTC, whose client is the `WEBRTC VoiceEngine` above, in the same
+  process.
+
+None of the three has run here: which names Steam's helper and Signal's
+streams carry is read, in their packaging and in WebRTC's and Chromium's
+sources, not seen in a running graph.
 
 **Games**, by the owner's call on 2026-11-11, "don't route video games output
 through easy effects": a game mixes its own sound for the speakers or

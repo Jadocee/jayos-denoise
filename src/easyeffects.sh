@@ -243,6 +243,31 @@ WANTED=(
 # serpantinum's skip of every call-role stream has no equivalent here. Merged
 # into the person's list, never over it: an entry already there is left, and
 # nothing is removed.
+#
+# And, by the owner's call on 2026-11-12, "Steam party voice chat, steam
+# in-game voice chat, and signal, should not be routed through easyeffects
+# for audio output":
+#
+#   steamwebhelper     Steam's chat, its party voice chat and the overlay's,
+#                      which Steam's client runs in its web helper, a
+#                      Chromium -- read, not run: its binary. GAME_APPS'
+#                      `steam` begins it too; named here so that it is a
+#                      voice application by its own entry
+#   signal-desktop     Signal, as Arch's signal-desktop runs it: electron-
+#   Signal             builder's own Electron at
+#   org.signal.Signal  /usr/lib/signal-desktop/signal-desktop (its PKGBUILD's
+#                      package(), and the signal-desktop.sh it installs in
+#                      /usr/bin, read on 2026-11-12), so the binary is its
+#                      name; Signal, the application.name Electron gives its
+#                      PulseAudio client, from which its node is named; and
+#                      the Flatpak's id. A call's engine, RingRTC, is
+#                      built on WebRTC, which names its own PulseAudio client
+#                      `WEBRTC VoiceEngine` (above) -- read, not run -- in
+#                      the same process, whose binary is the first name
+#
+# A game's in-game voice chat -- Steam's voice API, which the game decodes
+# and plays itself -- is the game's own stream, so GAME_APPS keeps it off:
+# Proton's by `wine`, and a native game's by the tag a launcher gives it.
 VOICE_APPS=(
     Discord discord com.discordapp
     vesktop Vesktop dev.vencord.Vesktop
@@ -254,6 +279,8 @@ VOICE_APPS=(
     zoom "ZOOM VoiceEngine" us.zoom.Zoom
     teams-for-linux com.github.IsmaelMartinez.teams_for_linux
     Element element-desktop im.riot.Riot
+    steamwebhelper
+    signal-desktop Signal org.signal.Signal
 )
 
 # The games kept off the output effects, by the owner's call on 2026-11-11:
