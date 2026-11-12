@@ -76,7 +76,8 @@ numbers were measured and which were read.
 |---|---|
 | `src/jayos-audio` | The engine. `denoise on`, `off`, `strength`, `input` and `status` drive the noise-suppression host; `denoise host` is the host, which writes its filter-chain configuration and execs `pipewire -c` on it; `floor` puts the recording floor into effect; `realtime` says how PipeWire's processes are scheduled. Knows nothing about whether noise suppression should be on: whatever draws the switch says. Its header says why each part is the way it is. |
 | `src/jayos-denoise` | 1.x's verbs -- `status`, `strengths`, `preset`, `set on\|off`, `apply` -- handed to the engine, for what still calls them. |
-| `src/easyeffects-lib.sh` | Where EasyEffects 8.x keeps its presets and settings, and how to speak to its socket: used only to bypass the input preset 1.x left. A copy of JayOS's; its header names the commit to diff against and the two edits. |
+| `src/easyeffects.sh` | EasyEffects as JayOS's volume popup, installer and doctor drive it, run as `jayos-audio easyeffects <verb>`: the settings an install puts back, the voice-chat applications and games kept off the output effects, the status, presets, bypass and starts, the default devices and the equaliser's preset. Moved from JayOS's `hypr/easyeffects.sh`; its header says when, and its three edits. |
+| `src/easyeffects-lib.sh` | Where EasyEffects 8.x keeps its presets and settings, and how to speak to its socket, for the helper above and the engine. JayOS's library, moved here whole; its header names the commit and the two edits. |
 | `rust/` | The two programs' Cargo workspace. `crates/jayos-audio-tools` is `jayos-audio-state` and `jayos-equalizer-preset`, moved from JayOS unchanged at jayos commit 45256e08 (its README); `crates/jayos-core` is a vendored copy of the five modules of JayOS's shared library they use, whose `PROVENANCE.md` has each file's sum and why a copy. |
 | `systemd/jayos-audio-denoise.service` | The host's user unit. `denoise on` enables and starts it, `off` stops and disables it. |
 | `share/` | The drop-ins the package installs under `/usr/share`: module-rt's portal path off for every native and JACK client, the floor under a PulseAudio client's recording cycle, and the soft mixer for ALSA cards. Each says why in its header. |
@@ -89,7 +90,8 @@ numbers were measured and which were read.
 | `tests/shell/` | The engine against stand-ins for systemd's user manager and PipeWire's tools (`test-engine.sh`); the host under a real PipeWire and WirePlumber (`test-host.sh`); the floor against stand-ins and under a real pipewire-pulse (`test-floor.sh`); the recipe and the steps against fakes (`test-packaging.sh`, `test-steps.sh`); `tools/contract.sh` and `tools/check.sh` against scratch copies of this tree (`test-contract.sh`); the built `jayos-audio-state` against fake `pactl`, `wpctl` and `pw-dump` (`test-audio-state.sh`, moved from JayOS with it); the vendored `jayos-core` against its table of sums (`test-vendored.sh`); and properties of the code that no behavioural test can hold (`test-source-guards.sh`). |
 | `tools/check.sh` | Everything above in one run: `rust/` built and tested where cargo is installed, and the rest with no Rust toolchain. |
 | `tools/contract.sh` | Compares `contract/` with what the code produces; `--write` rewrites it. |
-| `VERSION` | The package's version, which the checkout recipe's `pkgver` repeats. |
+| `tools/release.sh` | Makes a release: VERSION's version as an SSH-signed tag on `main`, checked by `tools/check.sh` over the commit and against `.github/allowed_signers`, and pushed. `tools/publish-release.sh` is what `.github/workflows/release.yml` checks it again with and publishes its page through. `docs/RELEASES.md` is the account, and how JayOS builds the release it pins. |
+| `VERSION` | The package's version, which the checkout recipe's `pkgver` repeats, and which a release's tag, `vVERSION`, names. |
 
 ## Installing
 

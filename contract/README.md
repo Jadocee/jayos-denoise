@@ -9,7 +9,8 @@ builds this package with a recipe of its own -- all from another repository. The
 on, in a form each side can test against without the other's code. jayos
 vendors a copy of this directory, records the commit it came from and each
 file's sha256, and its suites hold its wrappers, its popup, its doctor and its
-recipe to the copy.
+recipe to the copy -- a release's copy, since jayos builds the release its
+recipe pins and vendors the same one (docs/RELEASES.md).
 
 | File | What it is | Made by |
 |---|---|---|
