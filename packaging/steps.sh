@@ -5,10 +5,12 @@
 #   steps.sh pin                          print the plugin commit this tree pins
 #   steps.sh checkout <plugin-tree>       check that commit out, prove it is out, and
 #                                         apply packaging/patches/ to it
-#   steps.sh fetch <plugin-tree>          cargo fetch, locked, for this host only
-#   steps.sh build <plugin-tree>          build the plugin with the full model
+#   steps.sh fetch <plugin-tree>          cargo fetch, locked, for this host only: the
+#                                         plugin's crates, then this tree's rust/
+#   steps.sh build <plugin-tree>          build the plugin with the full model, and this
+#                                         tree's two programs
 #   steps.sh check <plugin-tree>          prove what was built, run the fork's tests,
-#                                         and check this tree's engine
+#                                         check this tree's engine, and test its programs
 #   steps.sh package <plugin-tree> <pkgdir>
 #                                         install everything under <pkgdir>
 #
@@ -53,6 +55,16 @@
 #
 # docs/DEEPFILTERNET.md, which has the reasoning and the numbers; what
 # follows says only what each step does and why it is written the way it is.
+#
+# THE TWO PROGRAMS
+#
+# rust/ is this tree's own Cargo workspace: jayos-audio-state and
+# jayos-equalizer-preset, which came here from JayOS with the rest of its
+# audio code (rust/crates/jayos-audio-tools/README.md). They ride the
+# plugin's four verbs rather than verbs of their own, so that neither recipe
+# changes for them -- JayOS's builds from main and calls exactly the forms
+# contract/steps.txt lists -- and a package can never be built with the
+# plugin and without the programs JayOS's volume popup runs.
 
 set -uo pipefail
 
@@ -106,6 +118,22 @@ tree_arg() { # tree_arg <path>
 cargo_env() { # cargo_env <tree>
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR="$1/target"
+}
+
+# This tree's workspace, and the two programs it builds. Their target
+# directory is rust/target for cargo_env's reasons: in the clone makepkg made,
+# under srcdir, where check and package find the programs and `makepkg -C`
+# cleans them, whatever the building user set globally. Each cargo call over
+# it runs in a subshell, so that the plugin's CARGO_TARGET_DIR, exported in
+# the same step, is never the one these build into.
+TOOLS="$ROOT/rust"
+TOOL_BINS=(jayos-audio-state jayos-equalizer-preset)
+tools_dir() {
+    [[ -f "$TOOLS/Cargo.toml" && -f "$TOOLS/Cargo.lock" ]] \
+        || die "no rust/Cargo.toml and Cargo.lock in $ROOT, so the programs cannot be built"
+}
+tools_cargo() { # tools_cargo <cargo args>...
+    ( cd "$TOOLS" && RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR="$TOOLS/target" cargo "$@" )
 }
 
 step_checkout() {
@@ -181,6 +209,10 @@ step_fetch() {
     host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
     [[ -n "$host" ]] || die "rustc did not say which target this host is; is a toolchain selected? (rustup default stable)"
     ( cd "$tree" && cargo fetch --locked --target "$host" ) || die "cargo fetch failed"
+    # The programs' crates the same way, so build can be --frozen: makepkg's
+    # build() may run where prepare() had the network and it has none.
+    tools_dir
+    tools_cargo fetch --locked --target "$host" || die "cargo fetch failed for rust/"
 }
 
 step_build() {
@@ -194,6 +226,13 @@ step_build() {
     # is the full model; docs/DEEPFILTERNET.md says why, and check proves it.
     ( cd "$tree" && cargo build --frozen --release -p deep-filter-ladspa --no-default-features ) \
         || die "cargo build failed"
+    # The workspace's own release profile, JayOS's settings: fat LTO and one
+    # codegen unit for programs whose point is to start fast, and
+    # panic = "abort", which the plugin cannot have and these want -- a
+    # helper that fails exits, and nothing catches a panic in them.
+    tools_dir
+    tools_cargo build --frozen --release -p jayos-audio-tools --bins \
+        || die "cargo build failed for rust/"
 }
 
 # Does the built .so carry this file, byte for byte?
@@ -377,11 +416,38 @@ check_engine() {
     done
 }
 
+# The programs: what they link, their unit tests, and the built
+# jayos-audio-state run whole against fake pactl, wpctl and pw-dump.
+#
+# The NEEDED check is the plugin's, for the same reason: a program that
+# links a library depends= does not install runs on the build machine and
+# nowhere else. The unit tests are the dev profile's, not the release
+# build's -- tests ignore panic = "abort", and LTO over a test harness would
+# double the step for nothing they test. And tests/shell/test-audio-state.sh
+# over the release binary, because the unit tests cover every pure function
+# and none of main(), which is where the decisions are that JayOS's popup
+# shows: three mis-wirings of main() passed every unit test (that suite's
+# header). Its exit 2 is a failure here as well: it is the suite saying it
+# examined nothing, and the binary it was handed was just built.
+check_tools() {
+    local b suite="$ROOT/tests/shell/test-audio-state.sh"
+    tools_dir
+    for b in "${TOOL_BINS[@]}"; do
+        [[ -f "$TOOLS/target/release/$b" ]] || die "no $TOOLS/target/release/$b; build first"
+        links_only_depends "$TOOLS/target/release/$b" || exit 1
+    done
+    tools_cargo test --frozen --workspace || die "the programs' tests failed"
+    [[ -f "$suite" ]] || die "no $suite to run the built jayos-audio-state against"
+    JAYOS_AUDIO_STATE_BIN="$TOOLS/target/release/jayos-audio-state" bash "$suite" \
+        || die "tests/shell/test-audio-state.sh failed against the built jayos-audio-state"
+}
+
 step_check() {
     local tree
     tree=$(tree_arg "${1:-}") || exit 1
     check_plugin "$tree"
     check_engine
+    check_tools
 }
 
 step_package() {
@@ -411,6 +477,15 @@ step_package() {
     install -d "$pkgdir/usr/bin" || die "could not make $pkgdir/usr/bin"
     ln -sfn ../lib/jayos-audio/jayos-audio "$pkgdir/usr/bin/jayos-audio" || die "could not link the engine"
     ln -sfn ../lib/jayos-audio/jayos-denoise "$pkgdir/usr/bin/jayos-denoise" || die "could not link jayos-denoise"
+
+    # The two programs, in /usr/bin itself: JayOS runs them by that path
+    # (its paths.sh's QS_PKG_BIN, and Paths.qml's pkgBinDir), and they find
+    # nothing beside themselves, so no link is needed.
+    local b
+    for b in "${TOOL_BINS[@]}"; do
+        install -Dm755 "$TOOLS/target/release/$b" -t "$pkgdir/usr/bin/" \
+            || die "could not install $b; build first"
+    done
 
     # The noise-suppression host's unit, a user unit, where systemd's user
     # manager reads a package's own.
