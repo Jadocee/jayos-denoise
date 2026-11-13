@@ -130,8 +130,18 @@ rust_checks() {
         echo "  no cargo, so rust/ was not built or tested"
         return 2
     fi
-    ( cd rust && cargo build --locked --workspace ) || return 1
-    ( cd rust && cargo test --locked --workspace ) || return 1
+    # rust/.cargo/config.toml links both with mold. Where mold is not
+    # installed an empty RUSTFLAGS, which cargo takes in place of that file's
+    # flags, links them with Rust's own linker instead, and the summary counts
+    # the link as not exercised: the programs are still built and tested, by
+    # a linker that is not the one packaging/steps.sh refuses to build without.
+    local -a link=()
+    if ! command -v ld.mold >/dev/null 2>&1; then
+        link=(RUSTFLAGS=)
+        echo "  skip linking rust/ with mold not exercised: mold is not installed (pacman -S mold)"
+    fi
+    ( cd rust && env "${link[@]}" cargo build --locked --workspace ) || return 1
+    ( cd rust && env "${link[@]}" cargo test --locked --workspace ) || return 1
     if cargo fmt --version >/dev/null 2>&1; then
         ( cd rust && cargo fmt --all --check ) || return 1
         echo "  rust/ is formatted as rust/rustfmt.toml says"

@@ -613,6 +613,27 @@ jemalloc while the Rust side already has thin LTO, and the debug option would
 add `-C debuginfo=2` to 145 crates for a `-debug` package nothing here would
 open.
 
+**Linked with mold**, since 2026-11-13, by JayOS's owner's call, "use
+https://github.com/rui314/mold for building rust": `packaging/steps.sh`
+appends `-C link-arg=-fuse-ld=mold` to `RUSTFLAGS` for `build` and `check`,
+after makepkg's own and once, and refuses both before cargo where `ld.mold` is
+not found; both recipes name `mold` among their makedepends, and
+`rust/.cargo/config.toml` gives `tools/check.sh`'s `cd rust && cargo` the
+same flag, linking with Rust's own LLD and counting it not exercised where
+mold is missing. `RUSTFLAGS` and not a cargo config, because makepkg sets
+`RUSTFLAGS`, which cargo takes in place of every config's flags.
+
+Run on 2026-11-13 under rustc 1.97.0 and mold 2.30.0, over a clone of the
+pinned commit: `checkout`, `fetch`, `build` and `check` all passed -- `build`
+in 5 min 9 s and `check` in 4 min 8 s with three other suites running beside
+them, so neither is a timing of the linker -- and the `.so` carries
+`mold 2.30.0` in its `.comment` section, with NEEDED libgcc_s, libm, libc and
+ld-linux, the list `links_only_depends` accepts; both programs carry the same.
+`tests/shell/test-host.sh`, pointed at that `.so`, ran the host under PipeWire
+1.0.5 and WirePlumber 0.4.17 and filtered white noise 42.0 dB quieter. The
+figures in the table above are from builds before mold. Not run: Arch's
+makepkg.conf, Arch's mold 3.0.0, and a call through this build.
+
 *[The table's steps are `packaging/steps.sh`'s now: `prepare()` calls its
 `checkout` and `fetch`, the other three the verb of the same name. `check`
 also checks the engine -- the two commands and the library parse, the two

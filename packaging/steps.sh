@@ -120,6 +120,26 @@ cargo_env() { # cargo_env <tree>
     export CARGO_TARGET_DIR="$1/target"
 }
 
+# MOLD LINKS WHAT THIS BUILDS -- the plugin, its tests and the two programs --
+# by JayOS's owner's call of 2026-11-13, "use https://github.com/rui314/mold
+# for building rust". As a link argument to the C compiler rustc drives, which
+# takes over from Rust's own LLD (rust/.cargo/config.toml says how, and what
+# was run to show it), and through RUSTFLAGS rather than a cargo config:
+# makepkg.conf sets RUSTFLAGS, and cargo takes that in place of every config's
+# flags, the fork's and rust/'s alike. Appended to what is there, once, so
+# makepkg's own flags stay and a second step in one shell does not repeat it.
+#
+# Refused before cargo where mold is missing: both recipes name it among their
+# makedepends, so a build without it is one makepkg did not prepare, and its
+# first link would fail minutes into the build. Only the steps that link ask;
+# fetch downloads and links nothing.
+MOLD_FLAG="-C link-arg=-fuse-ld=mold"
+link_with_mold() {
+    command -v ld.mold >/dev/null 2>&1 \
+        || die "mold is not installed, and this build links with it (pacman -S mold)"
+    [[ " ${RUSTFLAGS:-} " == *" $MOLD_FLAG "* ]] || export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$MOLD_FLAG"
+}
+
 # This tree's workspace, and the two programs it builds. Their target
 # directory is rust/target for cargo_env's reasons: in the clone makepkg made,
 # under srcdir, where check and package find the programs and `makepkg -C`
@@ -219,6 +239,7 @@ step_build() {
     local tree
     tree=$(tree_arg "${1:-}") || exit 1
     cargo_env "$tree"
+    link_with_mold
     # --release, not the workspace's release-lto profile: that one has
     # panic = "abort", and the plugin catches the panic an unsupported host
     # sample rate raises and turns it into a logged refusal -- an aborting
@@ -445,6 +466,9 @@ check_tools() {
 step_check() {
     local tree
     tree=$(tree_arg "${1:-}") || exit 1
+    # The tests link as the build did, and with the same flags, so cargo
+    # reuses what build compiled rather than building its 145 or so crates again.
+    link_with_mold
     check_plugin "$tree"
     check_engine
     check_tools

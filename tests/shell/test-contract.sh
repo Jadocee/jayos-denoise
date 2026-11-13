@@ -653,6 +653,18 @@ for want in 'cargo build --locked --workspace' 'cargo test --locked --workspace'
         bad "check.sh's rust/ step does not run $want"
     fi
 done
+# And links them as rust/.cargo/config.toml says, with mold, where mold is
+# installed: the build and the tests are each run through the one array that
+# an empty RUSTFLAGS goes into, and only where ld.mold is not found, with the
+# counted skip that says so.
+if [[ "$(grep -cE '^[[:space:]]+\( cd rust && env "\$\{link\[@\]\}" cargo (build|test) --locked --workspace \)' <<<"$RUST_STEP")" == 2 ]] \
+   && grep -qE '^[[:space:]]+if ! command -v ld\.mold >/dev/null 2>&1; then$' <<<"$RUST_STEP" \
+   && grep -qE '^[[:space:]]+link=\(RUSTFLAGS=\)$' <<<"$RUST_STEP" \
+   && grep -qF 'skip linking rust/ with mold not exercised' <<<"$RUST_STEP"; then
+    pass "both run through the array that holds an empty RUSTFLAGS only where there is no ld.mold, said as a skip"
+else
+    bad "check.sh's rust/ step does not link through rust/.cargo/config.toml's mold, falling back only without it"
+fi
 if grep -vE '^[[:space:]]*#' "$ROOT/tools/check.sh" | grep -qx 'run "rust/" rust_checks'; then
     pass "and check.sh runs that step"
 else
