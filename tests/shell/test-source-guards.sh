@@ -463,5 +463,31 @@ else
 fi
 
 echo
+echo "rust/.cargo/config.toml: mold links the programs"
+# One setting, as a TOML reader reads it: mold's flag for the x86_64 target,
+# which tools/check.sh's `cd rust && cargo` reads. packaging/steps.sh does not
+# rely on it (makepkg's RUSTFLAGS replaces it) and appends the same flag
+# itself, which tests/shell/test-steps.sh holds; the two spell it alike.
+MOLD_CFG="$ROOT/rust/.cargo/config.toml"
+if [[ ! -f "$MOLD_CFG" ]]; then
+    bad "rust/.cargo/config.toml is gone, and nothing links the programs with mold"
+elif python3 -c 'import tomllib' 2>/dev/null; then
+    got=$(python3 -I -c 'import json, sys, tomllib; print(json.dumps(tomllib.load(open(sys.argv[1], "rb")), sort_keys=True))' "$MOLD_CFG" 2>&1)
+    want='{"target": {"x86_64-unknown-linux-gnu": {"rustflags": ["-C", "link-arg=-fuse-ld=mold"]}}}'
+    if [[ "$got" == "$want" ]]; then
+        pass "it holds one setting: mold, as the x86_64 linker's argument"
+    else
+        bad "rust/.cargo/config.toml reads as $got, not $want"
+    fi
+else
+    echo "  skip rust/.cargo/config.toml as TOML not exercised: no python3 with tomllib"
+fi
+if grep -qxF 'MOLD_FLAG="-C link-arg=-fuse-ld=mold"' <(grep -vE '^[[:space:]]*#' "$ROOT/packaging/steps.sh"); then
+    pass "and packaging/steps.sh appends the same flag"
+else
+    bad "packaging/steps.sh's MOLD_FLAG is not the flag rust/.cargo/config.toml gives"
+fi
+
+echo
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

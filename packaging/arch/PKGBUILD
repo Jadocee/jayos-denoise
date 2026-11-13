@@ -59,8 +59,9 @@ license=('MIT' 'MIT OR Apache-2.0')
 depends=('glibc' 'gcc-libs' 'bash' 'jq' 'socat' 'procps-ng' 'util-linux' 'gawk' 'coreutils' 'sed' 'grep'
          'pipewire' 'wireplumber' 'rtkit' 'systemd')
 # cargo is provided by the rustup package as well as by rust, so either
-# toolchain satisfies makepkg; git is for the source line and the checkout.
-makedepends=('cargo' 'git')
+# toolchain satisfies makepkg; git is for the source line and the checkout;
+# and mold links the build, which packaging/steps.sh refuses without.
+makedepends=('cargo' 'git' 'mold')
 optdepends=('easyeffects: the output effects JayOS switches; no longer in the microphone'"'"'s path'
             'pipewire-pulse: the recording floor is for PulseAudio clients'
             'libpulse: pactl, so the floor can tell whether anything is streaming')

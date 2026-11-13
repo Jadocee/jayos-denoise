@@ -172,7 +172,9 @@ for o in '!lto' '!debug'; do
         bad "options=() lacks $o"
     fi
 done
-for m in cargo git; do
+# mold, because packaging/steps.sh links with it and refuses a build without
+# it: a makedepends without mold would have makepkg --syncdeps leave it out.
+for m in cargo git mold; do
     if has makedepends "$m"; then
         pass "makedepends=() has $m"
     else
